@@ -145,6 +145,11 @@ export {
 } from "./compiler/timingCompiler";
 
 export { MEDIA_RENDER_ID_ATTR, assignMediaRenderIds } from "./compiler/mediaRenderIds";
+export {
+  mapClipThroughHostWindow,
+  resolveNestedHostWindow,
+  type NestedHostWindow,
+} from "./runtime/nestedHostWindow";
 
 export {
   RENDER_FRAME_ID_PREFIX,
