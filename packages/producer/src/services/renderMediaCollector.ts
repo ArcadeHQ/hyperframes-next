@@ -15,7 +15,11 @@
  */
 
 import { parseHTML } from "linkedom";
-import { MEDIA_RENDER_ID_ATTR } from "@hyperframes/core";
+import {
+  MEDIA_RENDER_ID_ATTR,
+  mapClipThroughHostWindow,
+  resolveNestedHostWindow,
+} from "@hyperframes/core";
 import {
   MEDIA_START_BASIS_ATTR,
   readMediaStartBasis,
@@ -59,11 +63,19 @@ interface HostWindow {
   offset: number;
   /** Absolute time past which a descendant is outside its host, or Infinity. */
   limit: number;
+  windowStart: number;
+  hasInPoint: boolean;
   /** Whether authored media time is composition-local or legacy root-global. */
   basis: MediaStartBasis;
 }
 
-const ROOT_WINDOW: HostWindow = { offset: 0, limit: Infinity, basis: "local" };
+const ROOT_WINDOW: HostWindow = {
+  offset: 0,
+  limit: Infinity,
+  windowStart: 0,
+  hasInPoint: false,
+  basis: "local",
+};
 
 function parseNumeric(value: string | null): number | null {
   if (value == null || value === "") return null;
@@ -71,14 +83,20 @@ function parseNumeric(value: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function mediaBasis(element: Element): MediaStartBasis {
+  const tag = element.tagName.toLowerCase();
+  return tag === "video" || tag === "audio"
+    ? readMediaStartBasis(element.getAttribute(MEDIA_START_BASIS_ATTR))
+    : "local";
+}
+
 /**
  * Fold a media element's chain of composition hosts into one window.
  *
  * Host `data-start` is resolved the same way media is (`resolveReferencedStart`):
  * numeric literals, or an id / `data-composition-id` ref to a sibling slot's
- * end (`data-start="hook"`). `parseFloat("hook")` is 0, which stacked every
- * chained scene at 0–2s. Only `data-end` bounds a host: a host carrying just
- * `data-duration` was unbounded in the file-tree walk too.
+ * end (`data-start="hook"`). A slot in-point (`data-playback-start`) remaps
+ * through `resolveNestedHostWindow` so render matches preview.
  */
 function resolveHostWindow(
   element: Element,
@@ -86,38 +104,27 @@ function resolveHostWindow(
   startCache: Map<RefResolverEl, number>,
   visiting: Set<RefResolverEl>,
 ): HostWindow {
+  const nested = resolveNestedHostWindow(element);
+  const basis = mediaBasis(element);
+  if (nested?.hasInPoint) return { ...nested, basis };
+
   const hosts: Element[] = [];
   for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
     if (ancestor.hasAttribute(COMPOSITION_HOST_ATTR)) hosts.push(ancestor);
   }
-  if (hosts.length === 0) return ROOT_WINDOW;
+  if (hosts.length === 0) return { ...ROOT_WINDOW, basis };
 
   let offset = 0;
   let limit = Infinity;
-  // parentElement walks leaf → root; the offsets accumulate root → leaf.
   for (const host of hosts.reverse()) {
     const hostStart = resolveReferencedStart(document, host, startCache, visiting);
     const hostEnd = resolveHostEnd(host, hostStart);
     if (hostEnd != null) limit = Math.min(limit, offset + hostEnd);
     offset += hostStart;
   }
-  const tag = element.tagName.toLowerCase();
-  const basis =
-    tag === "video" || tag === "audio"
-      ? readMediaStartBasis(element.getAttribute(MEDIA_START_BASIS_ATTR))
-      : "local";
-  return {
-    offset,
-    limit,
-    basis,
-  };
+  return { offset, limit, windowStart: 0, hasInPoint: false, basis };
 }
 
-/**
- * Map each render id to the window of the composition hosts it is nested in.
- * Keyed on the render id rather than document position so the caller never has
- * to assume two separate parses walk the document in the same order.
- */
 function collectHostWindows(html: string): Map<string, HostWindow> {
   const { document } = parseHTML(html);
   const windows = new Map<string, HostWindow>();
@@ -134,11 +141,6 @@ function collectHostWindows(html: string): Map<string, HostWindow> {
   return windows;
 }
 
-/**
- * Shift a scene-relative window onto the root timeline.
- * Returns null when the clip starts after its host has already ended, matching
- * the `start < absoluteEnd` drop the file-tree walk applied.
- */
 function toAbsoluteWindow(
   start: number,
   end: number,
@@ -156,6 +158,34 @@ function toAbsoluteWindow(
     basis: window.basis,
   });
   return { start: absoluteStart, end: Math.min(absoluteEnd, window.limit) };
+}
+
+function mapMediaClip<T extends { start: number; end: number; mediaStart?: number }>(
+  clip: T,
+  window: HostWindow,
+  bumpMediaStart: boolean,
+): T | null {
+  if (window.hasInPoint) {
+    const mapped = mapClipThroughHostWindow(
+      clip.start,
+      clip.end,
+      clip.mediaStart,
+      window,
+      bumpMediaStart,
+    );
+    if (!mapped) return null;
+    return bumpMediaStart
+      ? {
+          ...clip,
+          start: mapped.start,
+          end: mapped.end,
+          mediaStart: mapped.mediaStart ?? clip.mediaStart,
+        }
+      : { ...clip, start: mapped.start, end: mapped.end };
+  }
+  const absolute = toAbsoluteWindow(clip.start, clip.end, window);
+  if (!absolute) return null;
+  return { ...clip, ...absolute };
 }
 
 export interface RenderMedia {
@@ -178,30 +208,25 @@ export function collectRenderMedia(html: string): RenderMedia {
 
   const videos: VideoElement[] = [];
   for (const video of parseVideoElements(html)) {
-    const absolute = toAbsoluteWindow(video.start, video.end, windowFor(video.id));
-    if (absolute) videos.push({ ...video, ...absolute });
+    const clipped = mapMediaClip(video, windowFor(video.id), true);
+    if (clipped) videos.push(clipped);
   }
 
   const images: ImageElement[] = [];
   for (const image of parseImageElements(html)) {
-    const absolute = toAbsoluteWindow(image.start, image.end, windowFor(image.id));
-    if (absolute) images.push({ ...image, ...absolute });
+    const clipped = mapMediaClip(image, windowFor(image.id), false);
+    if (clipped) images.push(clipped);
   }
 
-  // A <video data-has-audio> track is reported as "<renderId>-audio"; strip the
-  // suffix to look the element's host window back up.
   const audios: AudioElement[] = [];
   for (const audio of parseAudioElements(html)) {
     const elementId = audio.type === "video" ? audio.id.replace(/-audio$/, "") : audio.id;
-    // The mixer reads end === 0 as "run to the natural media length", so an
-    // unbounded track must stay unbounded rather than collapse onto its start.
     const authoredEnd = audio.end > 0 ? audio.end : Infinity;
-    const absolute = toAbsoluteWindow(audio.start, authoredEnd, windowFor(elementId));
-    if (!absolute) continue;
+    const clipped = mapMediaClip({ ...audio, end: authoredEnd }, windowFor(elementId), true);
+    if (!clipped) continue;
     audios.push({
-      ...audio,
-      start: absolute.start,
-      end: Number.isFinite(absolute.end) ? absolute.end : 0,
+      ...clipped,
+      end: Number.isFinite(clipped.end) ? clipped.end : 0,
     });
   }
 
