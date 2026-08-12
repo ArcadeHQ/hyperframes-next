@@ -1030,6 +1030,7 @@ describe("template-wrapped sub-composition media offsets", () => {
     hostAttrs: string,
     mediaAttrs: string = 'data-start="0" data-duration="4"',
     extraMediaMarkup: string = "",
+    extraRootMarkup: string = "",
   ): {
     projectDir: string;
     indexPath: string;
@@ -1051,6 +1052,7 @@ describe("template-wrapped sub-composition media offsets", () => {
       data-height="360"
       data-duration="4"
     >
+      ${extraRootMarkup}
       <div
         id="scene-host"
         data-composition-id="scene"
@@ -1113,6 +1115,21 @@ describe("template-wrapped sub-composition media offsets", () => {
       id: "scene-video-audio",
       start: 2,
       end: 6,
+    });
+  });
+
+  it("resolves a host data-start id-ref against a sibling clip", async () => {
+    const { projectDir, indexPath } = writeTemplateWrappedProject(
+      'data-start="intro" data-duration="2" data-width="640" data-height="360"',
+      'data-start="0" data-duration="4"',
+      "",
+      '<video id="intro" src="assets/clip.mp4" data-start="0" data-duration="10" muted></video>',
+    );
+
+    const compiled = await compileForRender(projectDir, indexPath, projectDir);
+    expect(compiled.videos.find((v) => v.id === "scene-video")).toMatchObject({
+      start: 10,
+      end: 14,
     });
   });
 

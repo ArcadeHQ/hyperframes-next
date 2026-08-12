@@ -54,6 +54,8 @@ import {
   assertMediaPayload,
   NotMediaPayloadError,
   probeMediaProfile,
+  resolveReferencedStart,
+  type RefResolverEl,
 } from "@hyperframes/engine";
 import {
   downloadToTemp,
@@ -666,6 +668,8 @@ async function parseSubCompositions(
 
   const { document } = parseHTML(html);
   const compEls = document.querySelectorAll("[data-composition-src]");
+  const startCache = new Map<RefResolverEl, number>();
+  const visiting = new Set<RefResolverEl>();
 
   // Build work items, filtering out invalid/circular entries synchronously
   const workItems: Array<{
@@ -683,7 +687,7 @@ async function parseSubCompositions(
     const srcPath = el.getAttribute("data-composition-src");
     if (!srcPath) continue;
 
-    const elStart = parseFloat(el.getAttribute("data-start") || "0");
+    const elStart = resolveReferencedStart(document, el, startCache, visiting);
     const elEndRaw = el.getAttribute("data-end");
     const elEnd = elEndRaw ? parseFloat(elEndRaw) : Infinity;
 

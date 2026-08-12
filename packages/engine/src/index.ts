@@ -211,6 +211,8 @@ export {
   isVideoFrameFormat,
 } from "./services/videoFrameExtractor.js";
 
+export { resolveReferencedStart, type RefResolverEl } from "./services/referenceResolver.js";
+
 export { createVideoFrameInjector } from "./services/videoFrameInjector.js";
 
 export {
