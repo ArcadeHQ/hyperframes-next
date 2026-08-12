@@ -1167,6 +1167,52 @@ describe("template-wrapped sub-composition media offsets", () => {
     });
   });
 
+  it("shifts sub-composition media by the slot in-point and clips at the window", async () => {
+    // Slot [5, 7) showing content from 1.5s in: media shifts by 5 − 1.5 = 3.5.
+    const { projectDir, indexPath } = writeTemplateWrappedProject(
+      'data-start="5" data-end="7" data-playback-start="1.5" data-width="640" data-height="360"',
+      // Local [1, 5): spans the in-point → head-trimmed to the window start.
+      'data-start="1" data-duration="4"',
+      `<audio
+        id="pre-audio"
+        src="../assets/early.wav"
+        data-start="0"
+        data-duration="1"
+        data-track-index="1"
+      ></audio>
+      <audio
+        id="late-audio"
+        src="../assets/late.wav"
+        data-start="2"
+        data-duration="1"
+        data-track-index="1"
+      ></audio>`,
+    );
+
+    const compiled = await compileForRender(projectDir, indexPath, projectDir);
+
+    // Shifted to [4.5, 8.5), clamped to the slot window [5, 7): the half
+    // second consumed before the window advances mediaStart instead.
+    expect(compiled.videos).toContainEqual(
+      expect.objectContaining({
+        id: "scene-video",
+        start: 5,
+        end: 7,
+        mediaStart: 0.5,
+      }),
+    );
+    // Local [0, 1) → shifted [3.5, 4.5) ends before the window → dropped.
+    expect(compiled.audios).not.toContainEqual(expect.objectContaining({ id: "pre-audio" }));
+    // Local [2, 3) → shifted [5.5, 6.5) inside the window → untouched.
+    expect(compiled.audios).toContainEqual(
+      expect.objectContaining({
+        id: "late-audio",
+        start: 5.5,
+        end: 6.5,
+      }),
+    );
+  });
+
   it("includes explicit audio from template-wrapped sub-compositions", async () => {
     const { projectDir, indexPath } = writeTemplateWrappedProject(
       'data-start="5" data-duration="6" data-width="640" data-height="360"',

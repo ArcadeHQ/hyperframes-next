@@ -606,6 +606,38 @@ async function compileHtmlFile(
 }
 
 /**
+ * Shift media into a composition slot; with an in-point, head-trim or drop
+ * anything that lands before the visible window.
+ * `drop` → filter from the post-inline main parse; `omit` → past the slot end.
+ */
+function shiftMediaIntoSlot(
+  media: { id: string; start: number; end: number; mediaStart?: number },
+  slot: { shift: number; absoluteEnd: number; inPoint: number; windowStart: number },
+  bumpMediaStart: boolean,
+): "emit" | "drop" | "omit" {
+  media.start += slot.shift;
+  media.end += slot.shift;
+  if (media.end > slot.absoluteEnd) {
+    media.end = slot.absoluteEnd;
+  }
+  if (
+    slot.inPoint > 0 &&
+    Number.isFinite(media.end) &&
+    media.end > media.start &&
+    media.end <= slot.windowStart
+  ) {
+    return "drop";
+  }
+  if (slot.inPoint > 0 && media.start < slot.windowStart) {
+    if (bumpMediaStart && typeof media.mediaStart === "number") {
+      media.mediaStart += slot.windowStart - media.start;
+    }
+    media.start = slot.windowStart;
+  }
+  return media.start < slot.absoluteEnd ? "emit" : "omit";
+}
+
+/**
  * Parse sub-compositions referenced via data-composition-src.
  * Reads each file, compiles it, extracts video/audio, adjusts timing offsets.
  * Recurses into nested sub-compositions with accumulated offsets.
@@ -617,16 +649,20 @@ async function parseSubCompositions(
   parentOffset: number = 0,
   parentEnd: number = Infinity,
   visited: Set<string> = new Set(),
+  parentWindowStart: number = 0,
 ): Promise<{
   videos: VideoElement[];
   audios: AudioElement[];
   images: ImageElement[];
   subCompositions: Map<string, string>;
+  /** Ids clipped by an in-point; filter out of the post-inline main parse. */
+  droppedMediaIds: Set<string>;
 }> {
   const videos: VideoElement[] = [];
   const audios: AudioElement[] = [];
   const images: ImageElement[] = [];
   const subCompositions = new Map<string, string>();
+  const droppedMediaIds = new Set<string>();
 
   const { document } = parseHTML(html);
   const compEls = document.querySelectorAll("[data-composition-src]");
@@ -636,6 +672,8 @@ async function parseSubCompositions(
     srcPath: string;
     absoluteStart: number;
     absoluteEnd: number;
+    inPoint: number;
+    windowStart: number;
     filePath: string;
     rawSubHtml: string;
     nestedVisited: Set<string>;
@@ -652,6 +690,12 @@ async function parseSubCompositions(
     const absoluteStart = parentOffset + elStart;
     const absoluteEnd = Math.min(parentEnd, isFinite(elEnd) ? parentOffset + elEnd : Infinity);
 
+    const inPointRaw =
+      el.getAttribute("data-playback-start") ?? el.getAttribute("data-media-start");
+    const parsedInPoint = inPointRaw ? parseFloat(inPointRaw) : NaN;
+    const inPoint = Number.isFinite(parsedInPoint) && parsedInPoint > 0 ? parsedInPoint : 0;
+    const windowStart = Math.max(parentWindowStart, absoluteStart);
+
     const filePath = resolve(projectDir, srcPath);
 
     // Circular reference guard
@@ -667,7 +711,16 @@ async function parseSubCompositions(
     const nestedVisited = new Set(visited);
     nestedVisited.add(filePath);
 
-    workItems.push({ srcPath, absoluteStart, absoluteEnd, filePath, rawSubHtml, nestedVisited });
+    workItems.push({
+      srcPath,
+      absoluteStart,
+      absoluteEnd,
+      inPoint,
+      windowStart,
+      filePath,
+      rawSubHtml,
+      nestedVisited,
+    });
   }
 
   // Parallelize file compilation + recursive parsing
@@ -683,9 +736,10 @@ async function parseSubCompositions(
         compiledSub,
         projectDir,
         downloadDir,
-        item.absoluteStart,
+        item.absoluteStart - item.inPoint,
         item.absoluteEnd,
         item.nestedVisited,
+        item.windowStart,
       );
 
       const subVideos = parseVideoElements(compiledSub);
@@ -701,6 +755,8 @@ async function parseSubCompositions(
         subImages,
         absoluteStart: item.absoluteStart,
         absoluteEnd: item.absoluteEnd,
+        inPoint: item.inPoint,
+        windowStart: item.windowStart,
       };
     }),
   );
@@ -712,41 +768,34 @@ async function parseSubCompositions(
     for (const [key, value] of r.nested.subCompositions) {
       subCompositions.set(key, value);
     }
+    for (const id of r.nested.droppedMediaIds) {
+      droppedMediaIds.add(id);
+    }
     videos.push(...r.nested.videos);
     audios.push(...r.nested.audios);
     images.push(...r.nested.images);
 
+    const slot = {
+      shift: r.absoluteStart - r.inPoint,
+      absoluteEnd: r.absoluteEnd,
+      inPoint: r.inPoint,
+      windowStart: r.windowStart,
+    };
+
     for (const v of r.subVideos) {
-      v.start += r.absoluteStart;
-      v.end += r.absoluteStart;
-      if (v.end > r.absoluteEnd) {
-        v.end = r.absoluteEnd;
-      }
-      if (v.start < r.absoluteEnd) {
-        videos.push(v);
-      }
+      const result = shiftMediaIntoSlot(v, slot, true);
+      if (result === "drop") droppedMediaIds.add(v.id);
+      else if (result === "emit") videos.push(v);
     }
-
     for (const a of r.subAudios) {
-      a.start += r.absoluteStart;
-      a.end += r.absoluteStart;
-      if (a.end > r.absoluteEnd) {
-        a.end = r.absoluteEnd;
-      }
-      if (a.start < r.absoluteEnd) {
-        audios.push(a);
-      }
+      const result = shiftMediaIntoSlot(a, slot, true);
+      if (result === "drop") droppedMediaIds.add(a.id);
+      else if (result === "emit") audios.push(a);
     }
-
     for (const img of r.subImages) {
-      img.start += r.absoluteStart;
-      img.end += r.absoluteStart;
-      if (img.end > r.absoluteEnd) {
-        img.end = r.absoluteEnd;
-      }
-      if (img.start < r.absoluteEnd) {
-        images.push(img);
-      }
+      const result = shiftMediaIntoSlot(img, slot, false);
+      if (result === "drop") droppedMediaIds.add(img.id);
+      else if (result === "emit") images.push(img);
     }
 
     if (
@@ -760,7 +809,7 @@ async function parseSubCompositions(
     }
   }
 
-  return { videos, audios, images, subCompositions };
+  return { videos, audios, images, subCompositions, droppedMediaIds };
 }
 
 /**
@@ -1881,6 +1930,7 @@ export async function compileForRender(
     audios: subAudios,
     images: subImages,
     subCompositions,
+    droppedMediaIds,
   } = await parseSubCompositions(compiledHtml, projectDir, downloadDir);
 
   // Ensure the HTML is a full document before inlining sub-compositions.
@@ -2023,10 +2073,11 @@ export async function compileForRender(
     externalAssets.set(relPath, absPath);
   }
 
-  // Parse main HTML elements
-  const mainVideos = parseVideoElements(html);
-  const mainAudios = parseAudioElements(html);
-  const mainImages = parseImageElements(html);
+  // Inlined sub-composition nodes reappear with LOCAL timings — drop anything
+  // the in-point window already clipped, or they resurface at the wrong time.
+  const mainVideos = parseVideoElements(html).filter((v) => !droppedMediaIds.has(v.id));
+  const mainAudios = parseAudioElements(html).filter((a) => !droppedMediaIds.has(a.id));
+  const mainImages = parseImageElements(html).filter((img) => !droppedMediaIds.has(img.id));
 
   // Keep inlined sub-composition media authoritative on ID collisions.
   // inlineSubCompositions() hoists those nodes into the final HTML, so the
@@ -2498,11 +2549,12 @@ export async function recompileWithResolutions(
     audios: subAudios,
     images: subImages,
     subCompositions,
+    droppedMediaIds,
   } = await parseSubCompositions(html, projectDir, downloadDir);
 
-  const mainVideos = parseVideoElements(html);
-  const mainAudios = parseAudioElements(html);
-  const mainImages = parseImageElements(html);
+  const mainVideos = parseVideoElements(html).filter((v) => !droppedMediaIds.has(v.id));
+  const mainAudios = parseAudioElements(html).filter((a) => !droppedMediaIds.has(a.id));
+  const mainImages = parseImageElements(html).filter((img) => !droppedMediaIds.has(img.id));
 
   // Keep inlined sub-composition media authoritative on ID collisions.
   const hasSubMedia = subVideos.length > 0 || subAudios.length > 0 || subImages.length > 0;

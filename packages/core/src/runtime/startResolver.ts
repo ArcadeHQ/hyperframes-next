@@ -22,6 +22,19 @@ function parseAuthoredEndAttr(element: Element): number | null {
   return parseNumeric(element.getAttribute(AUTHORED_END_ATTR));
 }
 
+/**
+ * Composition-slot in-point (seconds into content). Prefer
+ * `data-playback-start`; `data-media-start` is an alias. Media elements keep
+ * their own playback-start semantics and never resolve through this.
+ */
+export function parseCompositionInPointSeconds(element: Element): number {
+  if (typeof HTMLMediaElement !== "undefined" && element instanceof HTMLMediaElement) return 0;
+  const value =
+    parseNumeric(element.getAttribute("data-playback-start")) ??
+    parseNumeric(element.getAttribute("data-media-start"));
+  return value != null && value > 0 ? value : 0;
+}
+
 export function createRuntimeStartTimeResolver(params: {
   timelineRegistry?: Record<string, RuntimeTimelineLike | undefined>;
   includeAuthoredTimingAttrs?: boolean;
@@ -116,14 +129,21 @@ export function createRuntimeStartTimeResolver(params: {
   };
 
   const resolveHostOffsetForElement = (element: Element, fallback: number): number => {
+    // master = hostStart − inPoint + local
     if (element.hasAttribute("data-composition-id")) {
       const parentComposition = element.parentElement?.closest("[data-composition-id]");
       if (!parentComposition) return 0;
-      return resolveStartForElementInternal(parentComposition, fallback);
+      return (
+        resolveStartForElementInternal(parentComposition, fallback) -
+        parseCompositionInPointSeconds(parentComposition)
+      );
     }
     const compositionRoot = element.closest("[data-composition-id]");
     if (!compositionRoot) return 0;
-    return resolveStartForElementInternal(compositionRoot, fallback);
+    return (
+      resolveStartForElementInternal(compositionRoot, fallback) -
+      parseCompositionInPointSeconds(compositionRoot)
+    );
   };
 
   const resolveStartForElementInternal = (element: Element, fallback: number): number => {
@@ -156,7 +176,9 @@ export function createRuntimeStartTimeResolver(params: {
               parent.hasAttribute("data-composition-id") ||
               parent.hasAttribute("data-composition-file"))
           ) {
-            const parentStart = resolveStartForElementInternal(parent, fallback);
+            const parentStart =
+              resolveStartForElementInternal(parent, fallback) -
+              parseCompositionInPointSeconds(parent);
             startCache.set(element, parentStart);
             return parentStart;
           }

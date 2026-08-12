@@ -178,6 +178,42 @@ describe("createRuntimeStartTimeResolver", () => {
       expect(resolver.resolveStartForElement(video)).toBe(54);
     });
 
+    it("shifts nested media earlier by the host composition in-point", () => {
+      const host = document.createElement("div");
+      host.setAttribute("data-composition-id", "scene");
+      host.setAttribute("data-start", "5");
+      host.setAttribute("data-duration", "2");
+      host.setAttribute("data-playback-start", "1.5");
+      document.body.appendChild(host);
+
+      const video = document.createElement("video");
+      video.setAttribute("data-start", "1");
+      host.appendChild(video);
+
+      const resolver = createRuntimeStartTimeResolver({});
+      // Local 1 under hostStart 5 with in-point 1.5 → master 5 − 1.5 + 1 = 4.5
+      expect(resolver.resolveStartForElement(video)).toBe(4.5);
+    });
+
+    it("applies host in-point through an inlined inner composition root", () => {
+      const host = document.createElement("div");
+      host.setAttribute("data-composition-id", "scene");
+      host.setAttribute("data-start", "5");
+      host.setAttribute("data-playback-start", "1.5");
+      document.body.appendChild(host);
+
+      const innerRoot = document.createElement("div");
+      innerRoot.setAttribute("data-composition-id", "scene");
+      host.appendChild(innerRoot);
+
+      const video = document.createElement("video");
+      video.setAttribute("data-start", "0");
+      innerRoot.appendChild(video);
+
+      const resolver = createRuntimeStartTimeResolver({});
+      expect(resolver.resolveStartForElement(video)).toBe(3.5);
+    });
+
     it("walks up to the host's data-start when the inner root has none (host has its own data-composition-id)", () => {
       const host = document.createElement("div");
       host.setAttribute("data-composition-id", "montage");
