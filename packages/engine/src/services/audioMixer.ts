@@ -19,7 +19,7 @@ import {
 import { DEFAULT_CONFIG, type EngineConfig } from "../config.js";
 import { formatFfmpegError, runFfmpeg, type RunFfmpegResult } from "../utils/runFfmpeg.js";
 import { unwrapTemplate } from "../utils/htmlTemplate.js";
-import { resolveProjectRelativeSrc } from "./videoFrameExtractor.js";
+import { resolveMediaElementSrc, resolveProjectRelativeSrc } from "./videoFrameExtractor.js";
 import { resolveReferencedStart, type RefResolverEl } from "./referenceResolver.js";
 import type {
   AudioElement,
@@ -425,7 +425,12 @@ export function parseAudioElements(html: string): AudioElement[] {
   // <audio> and <video data-has-audio> tracks differ only in the emitted id
 
   // and `type`; everything else (timing, layer, volume) is read identically.
-  const build = (el: RefResolverEl, id: string, type: AudioElement["type"]): AudioElement => {
+  const build = (
+    el: RefResolverEl,
+    id: string,
+    src: string,
+    type: AudioElement["type"],
+  ): AudioElement => {
     const mediaStartAttr = el.getAttribute("data-media-start");
     const layerAttr = el.getAttribute("data-layer");
     const volumeAttr = el.getAttribute("data-volume");
@@ -433,7 +438,7 @@ export function parseAudioElements(html: string): AudioElement[] {
     const automation = el.getAttribute(HF_AUDIO_AUTOMATION_ATTR);
     return {
       id,
-      src: el.getAttribute("src") as string,
+      src,
       start: resolveStart(el),
       end: parseEnd(el.getAttribute("data-end")),
       mediaStart: mediaStartAttr ? parseFloat(mediaStartAttr) : 0,
@@ -445,16 +450,18 @@ export function parseAudioElements(html: string): AudioElement[] {
     };
   };
 
-  for (const el of document.querySelectorAll("audio[id][src]")) {
+  for (const el of document.querySelectorAll("audio[id]")) {
     const id = el.getAttribute("id");
-    if (!id || !el.getAttribute("src") || isHidden(el)) continue;
-    elements.push(build(el, id, "audio"));
+    const src = resolveMediaElementSrc(el);
+    if (!id || !src || isHidden(el)) continue;
+    elements.push(build(el, id, src, "audio"));
   }
 
-  for (const el of document.querySelectorAll('video[id][src][data-has-audio="true"]')) {
+  for (const el of document.querySelectorAll('video[id][data-has-audio="true"]')) {
     const id = el.getAttribute("id");
-    if (!id || !el.getAttribute("src") || isHidden(el)) continue;
-    elements.push(build(el, `${id}-audio`, "video"));
+    const src = resolveMediaElementSrc(el);
+    if (!id || !src || isHidden(el)) continue;
+    elements.push(build(el, `${id}-audio`, src, "video"));
   }
 
   return elements;
