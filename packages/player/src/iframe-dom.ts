@@ -35,8 +35,14 @@ export function adoptShadowStyles(shadow: ShadowRoot, cssText: string): void {
  * the wrapper container div. Returns handles to both so the constructor can
  * attach them to the shadow root and track references without inlining the
  * boilerplate.
+ *
+ * `allowSameOrigin` defaults true. Pass false when the host already has
+ * `opaque-origin` so the first navigation is unique-origin — removing the token
+ * after `src`/`srcdoc` would otherwise leave a same-origin first load.
  */
-export function createCompositionIframe(): {
+export function createCompositionIframe({
+  allowSameOrigin = true,
+}: { allowSameOrigin?: boolean } = {}): {
   container: HTMLDivElement;
   iframe: HTMLIFrameElement;
 } {
@@ -45,7 +51,8 @@ export function createCompositionIframe(): {
 
   const iframe = document.createElement("iframe");
   iframe.className = "hfp-iframe";
-  iframe.sandbox.add("allow-scripts", "allow-same-origin");
+  iframe.sandbox.add("allow-scripts");
+  if (allowSameOrigin) iframe.sandbox.add("allow-same-origin");
   iframe.allow = "autoplay; fullscreen";
   iframe.referrerPolicy = "no-referrer";
   iframe.title = "HyperFrames Composition";
