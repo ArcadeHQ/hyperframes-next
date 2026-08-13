@@ -1561,6 +1561,56 @@ describe("HyperframesPlayer srcdoc attribute", () => {
   });
 });
 
+describe("HyperframesPlayer opaque-origin attribute", () => {
+  type PlayerInternal = HTMLElement & {
+    iframe: HTMLIFrameElement;
+    opaqueOrigin: boolean;
+  };
+
+  beforeEach(async () => {
+    await import("./hyperframes-player.js");
+  });
+
+  it("includes opaque-origin in observedAttributes", () => {
+    const ctor = customElements.get("hyperframes-player") as
+      | (typeof HTMLElement & { observedAttributes: string[] })
+      | undefined;
+    expect(ctor).toBeDefined();
+    expect(ctor!.observedAttributes).toContain("opaque-origin");
+  });
+
+  it("keeps allow-same-origin on the composition iframe by default", () => {
+    const player = document.createElement("hyperframes-player") as PlayerInternal;
+    expect(player.iframe.sandbox.contains("allow-scripts")).toBe(true);
+    expect(player.iframe.sandbox.contains("allow-same-origin")).toBe(true);
+    player.remove();
+  });
+
+  it("drops allow-same-origin when opaque-origin is set, and restores it when removed", () => {
+    const player = document.createElement("hyperframes-player") as PlayerInternal;
+    player.opaqueOrigin = true;
+    expect(player.hasAttribute("opaque-origin")).toBe(true);
+    expect(player.iframe.sandbox.contains("allow-scripts")).toBe(true);
+    expect(player.iframe.sandbox.contains("allow-same-origin")).toBe(false);
+
+    player.opaqueOrigin = false;
+    expect(player.hasAttribute("opaque-origin")).toBe(false);
+    expect(player.iframe.sandbox.contains("allow-same-origin")).toBe(true);
+    player.remove();
+  });
+
+  it("never stamps allow-same-origin when opaque-origin is present on the tag, even if srcdoc comes first", () => {
+    // Upgrade callbacks fire in document attribute order. If the constructor
+    // always added allow-same-origin, `<... srcdoc="..." opaque-origin>` would
+    // navigate same-origin once before the opaque-origin callback could drop it.
+    document.body.innerHTML = `<hyperframes-player srcdoc="<!doctype html><html></html>" opaque-origin></hyperframes-player>`;
+    const player = document.body.firstElementChild as PlayerInternal;
+    expect(player.iframe.sandbox.contains("allow-scripts")).toBe(true);
+    expect(player.iframe.sandbox.contains("allow-same-origin")).toBe(false);
+    player.remove();
+  });
+});
+
 // ── Volume / Mute controls ──
 
 describe("HyperframesPlayer volume and mute", () => {

@@ -54,6 +54,7 @@ function clampPlaybackRate(rate: number): number {
 class HyperframesPlayer extends HTMLElement {
   static get observedAttributes() {
     return [
+      "opaque-origin",
       "src",
       "srcdoc",
       "width",
@@ -103,7 +104,9 @@ class HyperframesPlayer extends HTMLElement {
     this.shadow = this.attachShadow({ mode: "open" });
 
     adoptShadowStyles(this.shadow, PLAYER_STYLES);
-    ({ container: this.container, iframe: this.iframe } = createCompositionIframe());
+    ({ container: this.container, iframe: this.iframe } = createCompositionIframe({
+      allowSameOrigin: !this.hasAttribute("opaque-origin"),
+    }));
     this.shadow.appendChild(this.container);
 
     const loaderElements = createShaderLoader();
@@ -207,6 +210,9 @@ class HyperframesPlayer extends HTMLElement {
         this._ready = false;
         if (val !== null) this.iframe.srcdoc = prepareSrcdocForElement(this, val);
         else this.iframe.removeAttribute("srcdoc");
+        break;
+      case "opaque-origin":
+        this._syncIframeSandbox();
         break;
       // Reject NaN/zero/negative dimensions the same way the composition
       // probe does (a typo like width="abc" or width="0" would otherwise
@@ -499,6 +505,20 @@ class HyperframesPlayer extends HTMLElement {
   set loop(l: boolean) {
     if (l) this.setAttribute("loop", "");
     else this.removeAttribute("loop");
+  }
+
+  /** Drop `allow-same-origin` on the composition iframe (untrusted srcdoc). */
+  get opaqueOrigin() {
+    return this.hasAttribute("opaque-origin");
+  }
+  set opaqueOrigin(value: boolean) {
+    if (value) this.setAttribute("opaque-origin", "");
+    else this.removeAttribute("opaque-origin");
+  }
+
+  private _syncIframeSandbox(): void {
+    if (this.hasAttribute("opaque-origin")) this.iframe.sandbox.remove("allow-same-origin");
+    else this.iframe.sandbox.add("allow-same-origin");
   }
 
   private _sendControl(action: string, extra: Record<string, unknown> = {}) {
