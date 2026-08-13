@@ -26,7 +26,9 @@ If you need a classic `<script>` tag instead of ESM, use the explicit global bui
 <hyperframes-player src="./my-composition/index.html" controls></hyperframes-player>
 ```
 
-The player loads the composition in a sandboxed iframe, auto-detects its dimensions and duration, and scales it responsively to fit the container.
+The player loads the composition in a sandboxed iframe (`allow-scripts allow-same-origin` by default), auto-detects its dimensions and duration, and scales it responsively to fit the container.
+
+For untrusted `srcdoc` (LLM-authored HTML), set `opaque-origin` to drop `allow-same-origin`. In markup the attribute can sit anywhere on the tag; in JS set it **before** `src`/`srcdoc`. Playback still uses the existing `postMessage` bridge; `iframeElement.contentDocument` will not be readable.
 
 ### With a framework
 
@@ -65,6 +67,7 @@ Show a static image before playback starts:
 | `playback-rate`        | number                          | 1             | Speed multiplier (0.5 = half, 2 = double)                                   |
 | `autoplay`             | boolean                         | false         | Start playing when ready                                                    |
 | `loop`                 | boolean                         | false         | Restart when the composition ends                                           |
+| `opaque-origin`        | boolean                         | false         | Drop `allow-same-origin` on the composition iframe (untrusted `srcdoc`)     |
 | `shader-capture-scale` | number                          | —             | Shader transition snapshot scale forwarded to browser previews (`0.25`-`1`) |
 | `shader-loading`       | `composition \| player \| none` | `composition` | Controls shader transition prep loading UI ownership                        |
 
@@ -102,7 +105,7 @@ The player handles this automatically for same-origin iframes (the default — `
 3. When `play()` is called (from a user gesture), parent media `.play()` runs synchronously in the gesture call stack, satisfying mobile autoplay policy.
 4. Both parent media and the GSAP timeline start simultaneously and free-run — no active sync needed since both are real-time systems.
 
-No changes are required by consumers — this works out of the box.
+No changes are required by consumers — this works out of the box. `opaque-origin` embeds cannot reach iframe media from the parent; they keep playback on the postMessage bridge instead.
 
 The optional `audio-src` attribute can be used to start preloading a primary audio track before the iframe loads (useful on slow connections), but is not required for mobile playback.
 
@@ -125,6 +128,7 @@ player.playbackRate; // number (read/write)
 player.muted; // boolean (read/write)
 player.audioLocked; // boolean (read/write) — force-mute + hide volume controls
 player.loop; // boolean (read/write)
+player.opaqueOrigin; // boolean (read/write) — drop allow-same-origin on the composition iframe
 player.shaderCaptureScale; // number (read/write)
 player.shaderLoading; // "composition" | "player" | "none" (read/write)
 
@@ -134,7 +138,7 @@ player.iframeElement; // HTMLIFrameElement (read-only)
 
 ## Advanced: iframe access
 
-The composition runs inside a sandboxed `<iframe>` in the player's Shadow DOM. For most use cases you don't need direct access — the JavaScript API above is enough. But if you're building an editor, recorder, or custom timeline that needs to inspect the composition's DOM or read its `__player` / `__timelines` runtime objects, use the `iframeElement` getter:
+The composition runs inside a sandboxed `<iframe>` in the player's Shadow DOM. For most use cases you don't need direct access — the JavaScript API above is enough. But if you're building an editor, recorder, or custom timeline that needs to inspect the composition's DOM or read its `__player` / `__timelines` runtime objects, leave `opaque-origin` unset and use the `iframeElement` getter:
 
 ```js
 const player = document.querySelector("hyperframes-player");
