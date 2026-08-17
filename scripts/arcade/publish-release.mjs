@@ -49,6 +49,14 @@ function die(message, code = 1) {
   process.exit(code);
 }
 
+/** Prefer origin (ArcadeHQ/hyperframes-next), never gh's upstream-linked default. */
+function resolveOriginRepo() {
+  const url = run("git", ["remote", "get-url", "origin"]);
+  const m = url.match(/github\.com[:/]([^/]+\/[^/.]+)(?:\.git)?$/);
+  if (!m) throw new Error(`Cannot parse GitHub repo from origin: ${url}`);
+  return m[1];
+}
+
 const args = parseArgs(process.argv.slice(2));
 const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
 const packPackages = manifest.packPackages;
@@ -71,13 +79,17 @@ if (headBranch !== args.ref && !args.dryRun) {
 const version = JSON.parse(readFileSync(join(ROOT, "packages/core/package.json"), "utf8")).version;
 if (!version) die("packages/core/package.json missing version");
 
+const repo = args.repo || resolveOriginRepo();
+
 let tag = args.tag;
 if (!tag) {
   let n = 1;
   while (true) {
     const candidate = `v${version}-arcade.${n}`;
     try {
-      run("gh", ["release", "view", candidate], { stdio: ["ignore", "ignore", "ignore"] });
+      run("gh", ["release", "view", candidate, "--repo", repo], {
+        stdio: ["ignore", "ignore", "ignore"],
+      });
       n += 1;
     } catch {
       tag = candidate;
@@ -89,10 +101,6 @@ if (!tag) {
 if (!/^v\d+\.\d+\.\d+.*-arcade\.\d+$/.test(tag)) {
   die(`Tag must look like v${version}-arcade.N (got ${tag})`);
 }
-
-const repo =
-  args.repo ||
-  run("gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]);
 
 console.log(`ref:      ${args.ref}`);
 console.log(`version:  ${version}`);
@@ -108,6 +116,9 @@ if (args.dryRun) {
 console.log("\ninstall + build…");
 run("bun", ["install", "--frozen-lockfile"], { stdio: "inherit" });
 run("bun", ["run", "build"], { stdio: "inherit" });
+// verify-packed-manifests shells out to pnpm pack (same as upstream publish.yml).
+run("corepack", ["enable"], { stdio: "inherit" });
+run("corepack", ["prepare", "pnpm@10.17.1", "--activate"], { stdio: "inherit" });
 run("bun", ["run", "verify:packed-manifests"], { stdio: "inherit" });
 
 const packDir = mkdtempSync(join(tmpdir(), "hf-arcade-pack-"));
