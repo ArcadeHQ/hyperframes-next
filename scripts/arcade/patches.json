@@ -1,0 +1,13 @@
+{
+  "upstream": "upstream/main",
+  "integrationBranch": "arcade",
+  "patches": [
+    "patch/arcade-tooling",
+    "patch/visibility-scrub",
+    "patch/video-source",
+    "patch/playback-start-nested",
+    "patch/data-start-idref",
+    "patch/player-xss"
+  ],
+  "packPackages": ["parsers", "lint", "studio-server", "core", "player"]
+}
