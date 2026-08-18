@@ -2,13 +2,34 @@
   "upstream": "upstream/main",
   "integrationBranch": "arcade",
   "patches": [
-    "patch/arcade-tooling",
-    "patch/visibility-scrub",
-    "patch/video-source",
-    "patch/clamp-embedded-media",
-    "patch/playback-start-nested",
-    "patch/data-start-idref",
-    "patch/player-xss"
+    {
+      "branch": "patch/arcade-tooling",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/visibility-scrub",
+      "pr": "https://github.com/heygen-com/hyperframes/pull/3233"
+    },
+    {
+      "branch": "patch/video-source",
+      "pr": "https://github.com/heygen-com/hyperframes/pull/3238"
+    },
+    {
+      "branch": "patch/clamp-embedded-media"
+    },
+    {
+      "branch": "patch/playback-start-nested",
+      "issue": "https://github.com/heygen-com/hyperframes/issues/3245",
+      "upstreamPr": "https://github.com/heygen-com/hyperframes/pull/3246"
+    },
+    {
+      "branch": "patch/data-start-idref",
+      "pr": "https://github.com/heygen-com/hyperframes/pull/3252"
+    },
+    {
+      "branch": "patch/player-xss",
+      "keepLocal": true
+    }
   ],
   "packPackages": ["parsers", "lint", "studio-server", "core", "player"]
 }
