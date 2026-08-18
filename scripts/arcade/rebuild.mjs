@@ -56,11 +56,14 @@ function die(message, code = 1) {
 const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
 const upstream = manifest.upstream;
 const branch = manifest.integrationBranch;
-const patches = manifest.patches;
-
-if (!Array.isArray(patches) || patches.length === 0) {
+if (!Array.isArray(manifest.patches) || manifest.patches.length === 0) {
   die("patches.json: patches must be a non-empty array");
 }
+const patches = manifest.patches.map((p) => {
+  if (typeof p === "string") return p;
+  if (p && typeof p.branch === "string") return p.branch;
+  die("patches.json: each patch must be a string or { branch }");
+});
 
 if (!yes && !dryRun) {
   die("Refusing to reset arcade without --yes (or pass --dry-run).");
