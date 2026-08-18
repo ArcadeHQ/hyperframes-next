@@ -24,6 +24,15 @@ Conflict → abort names the patch. Rebase that `patch/*` onto `upstream/main`, 
 
 When an upstream PR merges, delete its row from `patches.json` (and optionally the branch).
 
+Each `patches` entry is `{ branch, issue?, pr?, upstreamPr?, keepLocal? }`:
+
+| Field        | Meaning                                           |
+| ------------ | ------------------------------------------------- |
+| `issue`      | Upstream issue we filed                           |
+| `pr`         | Our PR (usually from this `patch/*` branch)       |
+| `upstreamPr` | Their PR fixing our issue (when not `pr`)         |
+| `keepLocal`  | `true` — intentional Arcade-only; do not upstream |
+
 ## Publish GitHub Release tarballs
 
 Does **not** `npm publish`. Packs `packPackages` from `patches.json` and attaches `.tgz` to a prerelease.
