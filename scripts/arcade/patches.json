@@ -15,7 +15,9 @@
       "pr": "https://github.com/heygen-com/hyperframes/pull/3238"
     },
     {
-      "branch": "patch/clamp-embedded-media"
+      "branch": "patch/clamp-embedded-media",
+      "issue": "https://github.com/heygen-com/hyperframes/issues/3331",
+      "pr": "https://github.com/heygen-com/hyperframes/pull/3332"
     },
     {
       "branch": "patch/playback-start-nested",
