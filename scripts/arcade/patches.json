@@ -5,6 +5,7 @@
     "patch/arcade-tooling",
     "patch/visibility-scrub",
     "patch/video-source",
+    "patch/clamp-embedded-media",
     "patch/playback-start-nested",
     "patch/data-start-idref",
     "patch/player-xss"
