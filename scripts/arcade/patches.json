@@ -15,7 +15,8 @@
       "pr": "https://github.com/heygen-com/hyperframes/pull/3238"
     },
     {
-      "branch": "patch/host-window-bare-video"
+      "branch": "patch/host-window-bare-video",
+      "issue": "https://github.com/heygen-com/hyperframes/issues/3335"
     },
     {
       "branch": "patch/playback-start-nested",
