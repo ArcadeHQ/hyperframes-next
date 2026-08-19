@@ -2527,11 +2527,13 @@ export async function discoverAudioVolumeAutomationFromTimeline(
       if (!tl) return results;
 
       const seekTl = (t: number) => {
-        if (typeof tl.totalTime === "function") {
-          tl.totalTime(t, true);
-        } else if (typeof tl.seek === "function") {
-          tl.seek(t, true);
-        }
+        try {
+          if (typeof tl.totalTime === "function") {
+            tl.totalTime(t, true);
+          } else if (typeof tl.seek === "function") {
+            tl.seek(t, true);
+          }
+        } catch {}
       };
 
       for (const { id, start, end } of clips) {
@@ -2636,11 +2638,13 @@ export async function discoverVideoVisibilityFromTimeline(
     if (!tl) return results;
 
     const seekTl = (t: number) => {
-      if (typeof tl.totalTime === "function") {
-        tl.totalTime(t, true);
-      } else if (typeof tl.seek === "function") {
-        tl.seek(t, true);
-      }
+      try {
+        if (typeof tl.totalTime === "function") {
+          tl.totalTime(t, true);
+        } else if (typeof tl.seek === "function") {
+          tl.seek(t, true);
+        }
+      } catch {}
     };
 
     const SAMPLE_STEP = 0.1;
