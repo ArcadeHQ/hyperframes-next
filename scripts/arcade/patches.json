@@ -34,6 +34,10 @@
     {
       "branch": "patch/probe-seek-swallow",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/jump-seek-css-settle",
+      "keepLocal": true
     }
   ],
   "packPackages": ["parsers", "lint", "studio-server", "core", "player"]
