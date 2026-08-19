@@ -30,6 +30,10 @@
     {
       "branch": "patch/player-xss",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/probe-seek-swallow",
+      "keepLocal": true
     }
   ],
   "packPackages": ["parsers", "lint", "studio-server", "core", "player"]
