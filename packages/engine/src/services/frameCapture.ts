@@ -159,6 +159,7 @@ export interface CaptureSession {
   beginFrameIntervalMs: number;
   beginFrameHasDamageCount: number;
   beginFrameNoDamageCount: number;
+  lastSeekTime?: number;
   /** Optional producer config — when set, overrides module-level env var constants. */
   config?: Partial<EngineConfig>;
   /** True if running on SwiftShader (detected at init). Undefined before init. */
@@ -2525,6 +2526,68 @@ export async function waitForPendingSeekCompletion(page: Pick<Page, "evaluate">)
   });
 }
 
+const JUMP_SEEK_TOLERANCE_S = 0.1;
+
+export function isJumpSeek(previousTime: number | undefined, nextTime: number): boolean {
+  return Math.abs(nextTime - (previousTime ?? 0)) > JUMP_SEEK_TOLERANCE_S;
+}
+
+async function seekPageWithJumpSettle(
+  session: CaptureSession,
+  page: Page,
+  quantizedTime: number,
+  seekOptions?: { suppressEvents?: boolean },
+): Promise<{ hasPendingComposite: boolean }> {
+  const settleAfterSeek = isJumpSeek(session.lastSeekTime, quantizedTime);
+
+  const hasPendingComposite = await page.evaluate(
+    (t: number, suppressEvents: boolean) => {
+      const hf = (
+        window as unknown as {
+          __hf?: { seek?: (t: number, options?: { suppressEvents?: boolean }) => void };
+        }
+      ).__hf;
+      if (hf && typeof hf.seek === "function") {
+        if (suppressEvents) hf.seek(t, { suppressEvents: true });
+        else hf.seek(t);
+      }
+      return !!(window as unknown as { __hf_page_composite_pending?: boolean })
+        .__hf_page_composite_pending;
+    },
+    quantizedTime,
+    Boolean(seekOptions?.suppressEvents),
+  );
+  session.lastSeekTime = quantizedTime;
+
+  if (settleAfterSeek) await settlePageCssTransitions(page);
+
+  return { hasPendingComposite };
+}
+
+async function settlePageCssTransitions(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const settleDocument = (doc: Document) => {
+      if (typeof doc.getAnimations !== "function") return;
+      for (const animation of doc.getAnimations()) {
+        if (!("transitionProperty" in animation)) continue;
+        try {
+          animation.finish();
+        } catch {}
+      }
+    };
+    const settleWindow = (win: Window) => {
+      try {
+        settleDocument(win.document);
+      } catch {}
+      for (let i = 0; i < win.frames.length; i++) {
+        const child = win.frames[i];
+        if (child && child !== win) settleWindow(child);
+      }
+    };
+    settleWindow(window);
+  });
+}
+
 async function prepareFrameForCapture(
   session: CaptureSession,
   frameIndex: number,
@@ -2543,16 +2606,7 @@ async function prepareFrameForCapture(
   const quantizedTime = quantizeTimeToFrame(time, fpsToNumber(options.fps));
 
   const seekStart = Date.now();
-  // Seek via the __hf protocol. The page's seek() implementation handles
-  // all framework-specific logic (GSAP stepping, CSS animation sync, etc.)
-  // Seek + check page-side composite pending flag in one round-trip.
-  const hasPendingComposite = await page.evaluate((t: number) => {
-    if (window.__hf && typeof window.__hf.seek === "function") {
-      window.__hf.seek(t);
-    }
-    return !!(window as unknown as { __hf_page_composite_pending?: boolean })
-      .__hf_page_composite_pending;
-  }, quantizedTime);
+  const { hasPendingComposite } = await seekPageWithJumpSettle(session, page, quantizedTime);
 
   await decodeDynamicCssBackgroundImages(page);
 
@@ -3085,14 +3139,7 @@ export async function verifyStaticFramesSafe(
   const seekToFrame = async (frameIdx: number): Promise<void> => {
     stats.seeks++;
     const t = quantizeTimeToFrame(frameIdx / fps, fps);
-    await page.evaluate((tt: number) => {
-      const hf = (
-        window as unknown as {
-          __hf?: { seek?: (t: number, options?: { suppressEvents?: boolean }) => void };
-        }
-      ).__hf;
-      if (hf && typeof hf.seek === "function") hf.seek(tt, { suppressEvents: true });
-    }, t);
+    await seekPageWithJumpSettle(session, page, t, { suppressEvents: true });
   };
   const hardCap = Math.max(
     STATIC_VERIFY_MIN_SCREENSHOT_CAP,
@@ -3140,6 +3187,7 @@ export async function verifyStaticFramesSafe(
     stats.unverifiedFrames = plan.predictedFrames;
     return finish("infrastructure");
   } finally {
+    await settlePageCssTransitions(page).catch(() => {});
     await seekToFrame(0).catch(() => {});
     stats.elapsedMs = Math.max(0, now() - startedAt);
   }
@@ -4188,14 +4236,7 @@ async function captureDeVerificationFrames(
   // Seeking 0 → ascending reproduces the render's own seek order.
   const fractions = computeDeVerifySampleFractions(k);
   const seekTo = async (t: number): Promise<void> => {
-    await page.evaluate((tt: number) => {
-      const hf = (
-        window as unknown as {
-          __hf?: { seek?: (x: number, options?: { suppressEvents?: boolean }) => void };
-        }
-      ).__hf;
-      if (hf && typeof hf.seek === "function") hf.seek(tt, { suppressEvents: true });
-    }, t);
+    await seekPageWithJumpSettle(session, page, t, { suppressEvents: true });
   };
   await seekTo(quantizeTimeToFrame(0, fps));
   // Force one frame so lazy tween initialization paints at t=0 state.
