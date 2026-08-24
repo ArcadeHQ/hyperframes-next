@@ -7,11 +7,6 @@
       "keepLocal": true
     },
     {
-      "branch": "patch/visibility-scrub",
-      "issue": "https://github.com/heygen-com/hyperframes/issues/3360",
-      "pr": "https://github.com/heygen-com/hyperframes/pull/3233"
-    },
-    {
       "branch": "patch/video-source",
       "pr": "https://github.com/heygen-com/hyperframes/pull/3238"
     },
