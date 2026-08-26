@@ -22,6 +22,9 @@
     {
       "branch": "patch/jump-seek-css-settle",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/runtime-src-duplicate-ids"
     }
   ],
   "packPackages": ["parsers", "lint", "studio-server", "core", "player"]
