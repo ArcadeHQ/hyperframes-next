@@ -16,11 +16,6 @@
       "upstreamPr": "https://github.com/heygen-com/hyperframes/pull/3246"
     },
     {
-      "branch": "patch/data-start-idref",
-      "issue": "https://github.com/heygen-com/hyperframes/issues/3361",
-      "pr": "https://github.com/heygen-com/hyperframes/pull/3252"
-    },
-    {
       "branch": "patch/player-xss",
       "keepLocal": true
     },
