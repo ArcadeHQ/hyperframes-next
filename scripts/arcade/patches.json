@@ -19,6 +19,5 @@
       "branch": "patch/jump-seek-css-settle",
       "keepLocal": true
     }
-  ],
-  "packPackages": ["parsers", "lint", "studio-server", "core", "player"]
+  ]
 }
