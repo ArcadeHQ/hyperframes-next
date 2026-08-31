@@ -44,4 +44,4 @@ node scripts/arcade/publish-release.mjs --tag v0.7.107-arcade.1 --yes
 node scripts/arcade/publish-release.mjs --dry-run
 ```
 
-Pin every `@hyperframes/*` Arcade resolves to the printed Release asset URLs (packed manifests rewrite `workspace:*` → semver, which would otherwise hit public npm).
+Pin every `@hyperframes/*` Arcade resolves to the printed Release asset URLs. Packs with `pnpm pack` (same as `verify:packed-manifests`): rewrites `workspace:*` → semver and applies `publishConfig` so exports/types point at `dist/`. Re-run with `--tag vX.Y.Z-arcade.N` to replace assets on an existing release.
