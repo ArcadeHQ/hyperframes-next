@@ -12,10 +12,6 @@
       "upstreamPr": "https://github.com/heygen-com/hyperframes/pull/3246"
     },
     {
-      "branch": "patch/player-xss",
-      "keepLocal": true
-    },
-    {
       "branch": "patch/probe-seek-swallow",
       "keepLocal": true
     },
