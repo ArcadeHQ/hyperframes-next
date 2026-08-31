@@ -57,6 +57,17 @@ function resolveOriginRepo() {
   return m[1];
 }
 
+function releaseExists(tag, repo) {
+  try {
+    run("gh", ["release", "view", tag, "--repo", repo], {
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const args = parseArgs(process.argv.slice(2));
 const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
 const packPackages = manifest.packPackages;
@@ -84,18 +95,8 @@ const repo = args.repo || resolveOriginRepo();
 let tag = args.tag;
 if (!tag) {
   let n = 1;
-  while (true) {
-    const candidate = `v${version}-arcade.${n}`;
-    try {
-      run("gh", ["release", "view", candidate, "--repo", repo], {
-        stdio: ["ignore", "ignore", "ignore"],
-      });
-      n += 1;
-    } catch {
-      tag = candidate;
-      break;
-    }
-  }
+  while (releaseExists(`v${version}-arcade.${n}`, repo)) n += 1;
+  tag = `v${version}-arcade.${n}`;
 }
 
 if (!/^v\d+\.\d+\.\d+.*-arcade\.\d+$/.test(tag)) {
@@ -109,14 +110,16 @@ console.log(`repo:     ${repo}`);
 console.log(`packages: ${packPackages.join(", ")}`);
 
 if (args.dryRun) {
-  console.log("dry-run: would build, pack, and gh release create");
+  console.log("dry-run: would build, pnpm pack, and gh release create/upload");
   process.exit(0);
 }
 
 console.log("\ninstall + build…");
 run("bun", ["install", "--frozen-lockfile"], { stdio: "inherit" });
 run("bun", ["run", "build"], { stdio: "inherit" });
-// verify-packed-manifests shells out to pnpm pack (same as upstream publish.yml).
+// Same packer as verify-packed-manifests / upstream publish.yml: pnpm rewrites
+// workspace:* → the package version and applies publishConfig (exports/types → dist/).
+// npm pack does neither, so shipping those tarballs would pin workspace package.json.
 run("corepack", ["enable"], { stdio: "inherit" });
 run("corepack", ["prepare", "pnpm@10.17.1", "--activate"], { stdio: "inherit" });
 run("bun", ["run", "verify:packed-manifests"], { stdio: "inherit" });
@@ -127,8 +130,8 @@ mkdirSync(packDir, { recursive: true });
 try {
   for (const name of packPackages) {
     const pkgDir = join(ROOT, "packages", name);
-    console.log(`npm pack @hyperframes/${name}`);
-    run("npm", ["pack", "--pack-destination", packDir], { cwd: pkgDir, stdio: "inherit" });
+    console.log(`pnpm pack @hyperframes/${name}`);
+    run("pnpm", ["pack", "--pack-destination", packDir], { cwd: pkgDir, stdio: "inherit" });
   }
 
   const tarballs = readdirSync(packDir)
@@ -137,25 +140,37 @@ try {
     .sort();
   if (tarballs.length === 0) die("No .tgz produced");
 
-  console.log(`\ngh release create ${tag} (${tarballs.length} assets)`);
-  run(
-    "gh",
-    [
-      "release",
-      "create",
-      tag,
-      "--repo",
-      repo,
-      "--title",
-      tag,
-      "--prerelease",
-      "--generate-notes",
-      "--target",
-      run("git", ["rev-parse", "HEAD"]),
-      ...tarballs,
-    ],
-    { stdio: "inherit" },
-  );
+  const head = run("git", ["rev-parse", "HEAD"]);
+  if (releaseExists(tag, repo)) {
+    if (!args.tag) die(`Release ${tag} already exists (auto-increment failed)`);
+    console.log(`\ngh release upload --clobber ${tag} (${tarballs.length} assets)`);
+    run("gh", ["release", "edit", tag, "--repo", repo, "--target", head], {
+      stdio: "inherit",
+    });
+    run("gh", ["release", "upload", tag, "--repo", repo, "--clobber", ...tarballs], {
+      stdio: "inherit",
+    });
+  } else {
+    console.log(`\ngh release create ${tag} (${tarballs.length} assets)`);
+    run(
+      "gh",
+      [
+        "release",
+        "create",
+        tag,
+        "--repo",
+        repo,
+        "--title",
+        tag,
+        "--prerelease",
+        "--generate-notes",
+        "--target",
+        head,
+        ...tarballs,
+      ],
+      { stdio: "inherit" },
+    );
+  }
 
   const base = `https://github.com/${repo}/releases/download/${tag}`;
   console.log("\nArcade package.json pins:");
