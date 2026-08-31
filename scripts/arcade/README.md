@@ -32,16 +32,3 @@ Each `patches` entry is `{ branch, issue?, pr?, upstreamPr?, keepLocal? }`:
 | `pr`         | Our PR (usually from this `patch/*` branch)       |
 | `upstreamPr` | Their PR fixing our issue (when not `pr`)         |
 | `keepLocal`  | `true` — intentional Arcade-only; do not upstream |
-
-## Publish GitHub Release tarballs
-
-Does **not** `npm publish`. Packs `packPackages` from `patches.json` and attaches `.tgz` to a prerelease.
-
-```bash
-git checkout arcade   # after rebuild
-node scripts/arcade/publish-release.mjs --yes
-node scripts/arcade/publish-release.mjs --tag v0.7.107-arcade.1 --yes
-node scripts/arcade/publish-release.mjs --dry-run
-```
-
-Pin every `@hyperframes/*` Arcade resolves to the printed Release asset URLs. Packs with `pnpm pack` (same as `verify:packed-manifests`): rewrites `workspace:*` → semver and applies `publishConfig` so exports/types point at `dist/`. Re-run with `--tag vX.Y.Z-arcade.N` to replace assets on an existing release.
