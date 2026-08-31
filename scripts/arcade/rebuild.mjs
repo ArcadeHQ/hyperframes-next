@@ -109,6 +109,11 @@ if (dryRun) {
 }
 
 git(["checkout", "-B", branch, upstream]);
+// -B from a remote-tracking start-point inherits that upstream (upstream/main).
+// arcade is a fork integration branch — it should track origin/arcade.
+if (gitOk(["rev-parse", "--verify", `origin/${branch}`])) {
+  git(["branch", "--set-upstream-to", `origin/${branch}`]);
+}
 console.log(`reset ${branch} → ${upstream}`);
 
 for (const patch of patches) {
@@ -155,6 +160,7 @@ if (push) {
     cwd: ROOT,
     stdio: "inherit",
   });
+  git(["branch", "--set-upstream-to", `origin/${branch}`]);
   console.log(`pushed origin/${branch}`);
 } else {
   console.log(`\nPush when ready:\n  git push --force-with-lease origin ${branch}`);
