@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RateSpec } from "@hyperframes/core";
+import { MEDIA_RENDER_ID_ATTR, type RateSpec } from "@hyperframes/core";
 import { parseAudioElements, videoAudioId } from "../../../../../engine/src/services/audioMixer.js";
 import {
   parseVideoElements,
@@ -33,6 +33,7 @@ let mediaPreflightComposition: unknown;
 let afterMediaPreflight: (() => void) | null = null;
 let fileServerCloseCallCount = 0;
 let browserMediaResults: unknown[] = [];
+let visibilityWindows: { videoId: string; visibleStart: number; visibleEnd: number }[] = [];
 
 type MockSession = {
   id: number;
@@ -91,6 +92,7 @@ function resetRetryMocks() {
   afterMediaPreflight = null;
   fileServerCloseCallCount = 0;
   browserMediaResults = [];
+  visibilityWindows = [];
 }
 
 mock.module("../../assetMediaType.js", () => ({
@@ -200,7 +202,7 @@ mock.module("../../fileServer.js", () => ({
 mock.module("../../htmlCompiler.js", () => ({
   discoverMediaFromBrowser: async () => browserMediaResults,
   discoverAudioVolumeAutomationFromTimeline: async () => [],
-  discoverVideoVisibilityFromTimeline: async () => [],
+  discoverVideoVisibilityFromTimeline: async () => visibilityWindows,
   recompileWithResolutions: async (c: unknown) => c,
   resolveCompositionDurations: async () => [],
 }));
@@ -871,6 +873,46 @@ describe("runProbeStage — forceScreenshot threading", () => {
 
     expect(input.composition.audios.map((audio) => audio.end)).toEqual([
       6.530612, 3.836939, 3.836939,
+    ]);
+  });
+
+  const nestedEmptySrcHtml =
+    `<div data-composition-file="hook.html" data-composition-id="hook" data-start="0" data-duration="2"></div>` +
+    `<div data-composition-file="body.html" data-composition-id="body" data-start="hook" data-duration="2">` +
+    `<video ${MEDIA_RENDER_ID_ATTR}="demo" id="demo" data-start="0" data-media-start="2"></video>` +
+    `</div>`;
+
+  const discoveredNestedVideo = {
+    id: "demo",
+    tagName: "video" as const,
+    src: "runtime.mp4",
+    start: 0,
+    end: 0,
+    duration: 0,
+    mediaStart: 2,
+    loop: false,
+    hasAudio: false,
+    volume: 1,
+    muted: true,
+  };
+
+  it("maps a discovered nested video onto the host window", async () => {
+    resetRetryMocks();
+    browserMediaResults = [discoveredNestedVideo];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.compiled.html = nestedEmptySrcHtml;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos).toEqual([
+      expect.objectContaining({
+        id: "demo",
+        src: "runtime.mp4",
+        start: 2,
+        end: 0,
+        mediaStart: 2,
+      }),
     ]);
   });
 
