@@ -41,6 +41,7 @@ let browserMediaResults: unknown[] = [];
 let browserMediaError: Error | null = null;
 // Media sizes the mocked FFmpeg probe reports, by resolved path; any other path fails to probe.
 const mediaSizes = new Map<string, { width: number; height: number }>();
+let visibilityWindows: { videoId: string; visibleStart: number; visibleEnd: number }[] = [];
 
 type MockSession = {
   id: number;
@@ -100,6 +101,7 @@ function resetRetryMocks() {
   fileServerCloseCallCount = 0;
   browserMediaResults = [];
   mediaSizes.clear();
+  visibilityWindows = [];
 }
 
 mock.module("../../assetMediaType.js", () => ({
@@ -226,7 +228,7 @@ mock.module("../../htmlCompiler.js", () => ({
     return browserMediaResults;
   },
   discoverAudioVolumeAutomationFromTimeline: async () => [],
-  discoverVideoVisibilityFromTimeline: async () => [],
+  discoverVideoVisibilityFromTimeline: async () => visibilityWindows,
   recompileWithResolutions: async (c: unknown) => c,
   resolveCompositionDurations: async () => [],
 }));
@@ -1307,6 +1309,34 @@ describe("runProbeStage — forceScreenshot threading", () => {
       expect(closeCaptureSessionCallCount).toBe(check === 1 ? 0 : 1);
     },
   );
+
+  it("binds authored mediaStart to the visibility window, not scene start", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3.5, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 3,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({
+        id: "clip",
+        start: 3.5,
+        end: 6,
+        mediaStart: 3,
+      }),
+    );
+  });
 
   it("launches a probe when a static-duration composition inserts video at runtime", async () => {
     capturedCfgs.length = 0;
