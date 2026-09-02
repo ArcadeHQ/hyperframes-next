@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
+import { MEDIA_RENDER_ID_ATTR } from "@hyperframes/core";
 import {
   hasAutoStartVideos,
   hasScriptedAudioVolumeAutomation,
@@ -18,6 +19,7 @@ let mediaPreflightComposition: unknown;
 let afterMediaPreflight: (() => void) | null = null;
 let fileServerCloseCallCount = 0;
 let browserMediaResults: unknown[] = [];
+let visibilityWindows: { videoId: string; visibleStart: number; visibleEnd: number }[] = [];
 
 type MockSession = {
   id: number;
@@ -76,6 +78,7 @@ function resetRetryMocks() {
   afterMediaPreflight = null;
   fileServerCloseCallCount = 0;
   browserMediaResults = [];
+  visibilityWindows = [];
 }
 
 mock.module("../../assetMediaType.js", () => ({
@@ -180,7 +183,7 @@ mock.module("../../fileServer.js", () => ({
 mock.module("../../htmlCompiler.js", () => ({
   discoverMediaFromBrowser: async () => browserMediaResults,
   discoverAudioVolumeAutomationFromTimeline: async () => [],
-  discoverVideoVisibilityFromTimeline: async () => [],
+  discoverVideoVisibilityFromTimeline: async () => visibilityWindows,
   recompileWithResolutions: async (c: unknown) => c,
   resolveCompositionDurations: async () => [],
 }));
@@ -442,6 +445,47 @@ describe("runProbeStage — forceScreenshot threading", () => {
 
     expect(input.composition.videos[0]?.src).toBe("runtime-still.asset");
     expect(mediaPreflightComposition).toBe(input.composition);
+  });
+
+  const nestedEmptySrcHtml =
+    `<div data-composition-file="hook.html" data-composition-id="hook" data-start="0" data-duration="2"></div>` +
+    `<div data-composition-file="body.html" data-composition-id="body" data-start="hook" data-duration="2">` +
+    `<video ${MEDIA_RENDER_ID_ATTR}="demo" id="demo" data-start="0" data-media-start="2"></video>` +
+    `</div>`;
+
+  const discoveredNestedVideo = {
+    id: "demo",
+    tagName: "video" as const,
+    src: "runtime.mp4",
+    start: 0,
+    end: 0,
+    duration: 0,
+    mediaStart: 2,
+    loop: false,
+    hasAudio: false,
+    volume: 1,
+    muted: true,
+  };
+
+  it("does not let visibility pull a host-mapped start back to 0", async () => {
+    resetRetryMocks();
+    browserMediaResults = [discoveredNestedVideo];
+    visibilityWindows = [{ videoId: "demo", visibleStart: 0, visibleEnd: 4 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.compiled.html = nestedEmptySrcHtml;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos).toEqual([
+      expect.objectContaining({
+        id: "demo",
+        src: "runtime.mp4",
+        start: 2,
+        end: 4,
+        mediaStart: 2,
+      }),
+    ]);
   });
 
   it("passes cancellation through and closes probe-owned resources when preflight rejects", async () => {
