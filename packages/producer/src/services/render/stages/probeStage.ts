@@ -92,6 +92,7 @@ import {
 } from "../../assetMediaType.js";
 import { resolveCaptureSurface } from "../captureImageFormat.js";
 import { computeCompositionObservabilityHash } from "../observability.js";
+import { createHostWindowMapper } from "../../hostWindowMapper.js";
 
 export interface ProbeStageInput {
   projectDir: string;
@@ -653,6 +654,7 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
         const authoredStarts = authoredMediaStarts(compiled.html);
 
         pruneMutedBrowserMedia(composition, browserMedia, existingAudioIds);
+        const mapHost = createHostWindowMapper(compiled.html);
 
         for (const el of browserMedia) {
           if (!el.src || el.src === "about:blank") continue;
@@ -702,12 +704,17 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
                 if (audio) audio.loop = existing.loop;
               }
             } else if (!compiled.droppedMediaIds.has(el.id)) {
-              // New video discovered from browser
+              const placed = mapHost(
+                el.id,
+                el.start,
+                resolveBrowserMediaEnd(el.start, el.end, el.duration),
+              );
+              if (!placed) continue;
               composition.videos.push({
                 id: el.id,
                 src,
-                start: el.start,
-                end: resolveBrowserMediaEnd(el.start, el.end, el.duration),
+                start: placed.start,
+                end: placed.end,
                 mediaStart: el.mediaStart,
                 playbackRate: el.playbackRate,
                 loop: el.loop,
@@ -749,11 +756,17 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
                 }
               }
             } else if (!compiled.droppedMediaIds.has(el.id)) {
+              const placed = mapHost(
+                el.id,
+                el.start,
+                resolveBrowserMediaEnd(el.start, el.end, el.duration),
+              );
+              if (!placed) continue;
               composition.audios.push({
                 id: el.id,
                 src,
-                start: el.start,
-                end: resolveBrowserMediaEnd(el.start, el.end, el.duration),
+                start: placed.start,
+                end: placed.end,
                 mediaStart: el.mediaStart,
                 loop: el.loop,
                 playbackRate: el.playbackRate,
@@ -782,11 +795,17 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
                 }
               }
             } else if (!compiled.droppedMediaIds.has(el.id)) {
+              const placed = mapHost(
+                el.id,
+                el.start,
+                resolveBrowserMediaEnd(el.start, el.end, el.duration),
+              );
+              if (!placed) continue;
               composition.images.push({
                 id: el.id,
                 src,
-                start: el.start,
-                end: resolveBrowserMediaEnd(el.start, el.end, el.duration),
+                start: placed.start,
+                end: placed.end,
               });
               existingImageIds.add(el.id);
             }
