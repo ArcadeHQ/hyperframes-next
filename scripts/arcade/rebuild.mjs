@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Rebuild the disposable `arcade` integration branch:
- * reset to upstream/main, then cherry-pick each patch tip in patches.json order.
+ * reset to `base` (--base, else patches.json `base`, else `upstream`), then cherry-pick
+ * each patch tip in patches.json order.
  *
  * Bootstrap (scripts may not be on current checkout):
  *   git fetch origin upstream
@@ -9,10 +10,12 @@
  *   node scripts/arcade/rebuild.mjs --yes
  *
  * On conflict: script aborts and names the failing patch — rebase that
- * patch/* onto upstream/main, then re-run.
+ * patch/* onto the same base, then re-run.
  *
  * Usage:
  *   node scripts/arcade/rebuild.mjs --yes
+ *   node scripts/arcade/rebuild.mjs --yes --base main
+ *   node scripts/arcade/rebuild.mjs --yes --base upstream/main
  *   node scripts/arcade/rebuild.mjs --yes --push
  *   node scripts/arcade/rebuild.mjs --dry-run
  */
@@ -25,10 +28,19 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const MANIFEST_PATH = join(dirname(fileURLToPath(import.meta.url)), "patches.json");
 
-const args = new Set(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const args = new Set(argv);
 const dryRun = args.has("--dry-run");
 const push = args.has("--push");
 const yes = args.has("--yes");
+
+function takeArg(name) {
+  const i = argv.indexOf(name);
+  if (i === -1) return null;
+  const value = argv[i + 1];
+  if (!value || value.startsWith("-")) die(`${name} requires a git ref`);
+  return value;
+}
 
 function git(gitArgs, opts = {}) {
   return execFileSync("git", gitArgs, {
@@ -54,8 +66,10 @@ function die(message, code = 1) {
 }
 
 const manifest = JSON.parse(readFileSync(MANIFEST_PATH, "utf8"));
-const upstream = manifest.upstream;
+const upstream = typeof manifest.upstream === "string" ? manifest.upstream : null;
+const base = takeArg("--base") || (typeof manifest.base === "string" ? manifest.base : null) || upstream;
 const branch = manifest.integrationBranch;
+if (!base) die("patches.json: set base or upstream, or pass --base <ref>");
 if (!Array.isArray(manifest.patches) || manifest.patches.length === 0) {
   die("patches.json: patches must be a non-empty array");
 }
@@ -74,8 +88,8 @@ if (status) {
   die(`Working tree dirty:\n${status}`);
 }
 
-if (!gitOk(["rev-parse", "--verify", upstream])) {
-  die(`Missing ${upstream}. Run: git fetch upstream`);
+if (!gitOk(["rev-parse", "--verify", base])) {
+  die(`Missing ${base}. Run: git fetch origin upstream`);
 }
 
 for (const patch of patches) {
@@ -84,13 +98,16 @@ for (const patch of patches) {
   }
 }
 
-const upstreamSha = git(["rev-parse", upstream]);
-console.log(`upstream:  ${upstream} @ ${upstreamSha.slice(0, 12)}`);
+const baseSha = git(["rev-parse", base]);
+console.log(`base:      ${base} @ ${baseSha.slice(0, 12)}`);
+if (upstream && upstream !== base && gitOk(["rev-parse", "--verify", upstream])) {
+  console.log(`upstream:  ${upstream} @ ${git(["rev-parse", upstream]).slice(0, 12)}`);
+}
 console.log(`branch:    ${branch}`);
 console.log(`patches:   ${patches.length}`);
 for (const patch of patches) {
   const tip = git(["rev-parse", patch]);
-  const commits = git(["rev-list", "--reverse", `${upstream}..${patch}`])
+  const commits = git(["rev-list", "--reverse", `${base}..${patch}`])
     .split("\n")
     .filter(Boolean);
   console.log(
@@ -98,7 +115,7 @@ for (const patch of patches) {
   );
   if (commits.length === 0) {
     console.warn(
-      `    warn: no commits in ${upstream}..${patch} — already in upstream or empty; will skip`,
+      `    warn: no commits in ${base}..${patch} — already in base or empty; will skip`,
     );
   }
 }
@@ -108,16 +125,16 @@ if (dryRun) {
   process.exit(0);
 }
 
-git(["checkout", "-B", branch, upstream]);
-// -B from a remote-tracking start-point inherits that upstream (upstream/main).
+git(["checkout", "-B", branch, base]);
+// -B from a remote-tracking start-point inherits that upstream.
 // arcade is a fork integration branch — it should track origin/arcade.
 if (gitOk(["rev-parse", "--verify", `origin/${branch}`])) {
   git(["branch", "--set-upstream-to", `origin/${branch}`]);
 }
-console.log(`reset ${branch} → ${upstream}`);
+console.log(`reset ${branch} → ${base}`);
 
 for (const patch of patches) {
-  const commits = git(["rev-list", "--reverse", `${upstream}..${patch}`])
+  const commits = git(["rev-list", "--reverse", `${base}..${patch}`])
     .split("\n")
     .filter(Boolean);
   if (commits.length === 0) {
@@ -134,9 +151,9 @@ for (const patch of patches) {
     });
   } catch {
     console.error(`\nConflict while cherry-picking ${patch}.`);
-    console.error(`Fix that patch branch onto ${upstream}, then re-run:`);
+    console.error(`Fix that patch branch onto ${base}, then re-run:`);
     console.error(`  git checkout ${patch}`);
-    console.error(`  git rebase ${upstream}`);
+    console.error(`  git rebase ${base}`);
     console.error(`  # resolve, then:`);
     console.error(`  git checkout patch/arcade-tooling`);
     console.error(`  node scripts/arcade/rebuild.mjs --yes`);
@@ -152,8 +169,8 @@ for (const patch of patches) {
 
 const tip = git(["rev-parse", "HEAD"]);
 console.log(`\n${branch} tip: ${tip}`);
-console.log(`commits on ${branch} not in ${upstream}:`);
-console.log(git(["log", "--oneline", `${upstream}..HEAD`]) || "(none)");
+console.log(`commits on ${branch} not in ${base}:`);
+console.log(git(["log", "--oneline", `${base}..HEAD`]) || "(none)");
 
 if (push) {
   execFileSync("git", ["push", "--force-with-lease", "origin", branch], {
