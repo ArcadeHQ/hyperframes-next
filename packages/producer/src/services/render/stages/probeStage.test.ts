@@ -519,6 +519,34 @@ describe("runProbeStage — forceScreenshot threading", () => {
     expect(fileServerCloseCallCount).toBe(1);
   });
 
+  it("binds authored mediaStart to the visibility window, not scene start", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3.5, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 3,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({
+        id: "clip",
+        start: 3.5,
+        end: 6,
+        mediaStart: 3,
+      }),
+    );
+  });
+
   it("launches a probe when a static-duration composition inserts video at runtime", async () => {
     capturedCfgs.length = 0;
     const { runProbeStage } = await import("./probeStage.js");

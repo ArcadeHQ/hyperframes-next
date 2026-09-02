@@ -2386,8 +2386,10 @@ export interface VideoVisibilityWindow {
 }
 
 /**
- * Seek the GSAP timeline to discover when each video's parent scene is visible.
- * Only processes videos with the data-hf-auto-start sentinel (auto-injected timing).
+ * Seek the composition and discover when each auto-start video is visible.
+ * Visibility is the video's effective opacity (element × ancestors), not `.scene`.
+ * Prefers `window.__hf.seek` so nested scene GSAP (paused sibling timelines)
+ * actually updates — root `totalTime` does not propagate to them.
  */
 export async function discoverVideoVisibilityFromTimeline(
   page: Page,
@@ -2400,6 +2402,11 @@ export async function discoverVideoVisibilityFromTimeline(
     const videos = document.querySelectorAll("video[data-hf-auto-start]");
     if (videos.length === 0) return results;
 
+    const hfSeek = (
+      window as unknown as {
+        __hf?: { seek?: (t: number, o?: { suppressEvents?: boolean }) => void };
+      }
+    ).__hf?.seek;
     const timelines = (window as unknown as { __timelines?: Record<string, unknown> }).__timelines;
     if (!timelines) return results;
 
@@ -2425,14 +2432,35 @@ export async function discoverVideoVisibilityFromTimeline(
       } catch {}
     };
 
+    const seekComposition = (t: number) => {
+      if (typeof hfSeek === "function") {
+        try {
+          hfSeek(t, { suppressEvents: true });
+        } catch {}
+        return;
+      }
+      seekTl(t);
+    };
+
+    // Same walk as videoFrameInjector: GSAP often animates a wrapper, not the
+    // <video>. `val || 1` would turn opacity:0 into 1.
+    const getEffectiveOpacity = (node: Element): number => {
+      let opacity = 1;
+      let current: Element | null = node;
+      while (current) {
+        const val = parseFloat(window.getComputedStyle(current).opacity);
+        opacity *= Number.isNaN(val) ? 1 : val;
+        current = current.parentElement;
+      }
+      return opacity;
+    };
+
     const SAMPLE_STEP = 0.1;
     const BINARY_PRECISION = 1 / 60;
 
-    // Seek once per timestep and sample every video — seeking dominates and is
-    // independent of which element we read.
     const entries: {
       id: string;
-      sceneEl: Element;
+      videoEl: Element;
       firstVisible: number | null;
       lastVisible: number | null;
     }[] = [];
@@ -2441,7 +2469,7 @@ export async function discoverVideoVisibilityFromTimeline(
       if (!id) continue;
       entries.push({
         id,
-        sceneEl: videoEl.closest(".scene") || videoEl,
+        videoEl,
         firstVisible: null,
         lastVisible: null,
       });
@@ -2449,41 +2477,35 @@ export async function discoverVideoVisibilityFromTimeline(
     if (entries.length === 0) return results;
 
     for (let t = 0; t <= duration; t += SAMPLE_STEP) {
-      seekTl(t);
+      seekComposition(t);
       for (const entry of entries) {
-        const opacity = parseFloat(window.getComputedStyle(entry.sceneEl).opacity);
-        if (opacity > 0) {
+        if (getEffectiveOpacity(entry.videoEl) > 0) {
           if (entry.firstVisible === null) entry.firstVisible = t;
           entry.lastVisible = t;
         }
       }
     }
 
-    // Per-video boundary refinement (cheap: O(log(step)) seeks each).
     for (const entry of entries) {
-      const { id, sceneEl, firstVisible, lastVisible } = entry;
+      const { id, videoEl, firstVisible, lastVisible } = entry;
       if (firstVisible === null || lastVisible === null) continue;
 
-      // Binary search left boundary
       let lo = Math.max(0, firstVisible - SAMPLE_STEP);
       let hi = firstVisible;
       while (hi - lo > BINARY_PRECISION) {
         const mid = (lo + hi) / 2;
-        seekTl(mid);
-        const opacity = parseFloat(window.getComputedStyle(sceneEl).opacity);
-        if (opacity > 0) hi = mid;
+        seekComposition(mid);
+        if (getEffectiveOpacity(videoEl) > 0) hi = mid;
         else lo = mid;
       }
       const exactStart = hi;
 
-      // Binary search right boundary
       lo = lastVisible;
       hi = Math.min(duration, lastVisible + SAMPLE_STEP);
       while (hi - lo > BINARY_PRECISION) {
         const mid = (lo + hi) / 2;
-        seekTl(mid);
-        const opacity = parseFloat(window.getComputedStyle(sceneEl).opacity);
-        if (opacity > 0) lo = mid;
+        seekComposition(mid);
+        if (getEffectiveOpacity(videoEl) > 0) lo = mid;
         else hi = mid;
       }
       const exactEnd = lo;
@@ -2495,7 +2517,7 @@ export async function discoverVideoVisibilityFromTimeline(
       });
     }
 
-    seekTl(0);
+    seekComposition(0);
     return results;
   }, compositionDuration);
 }

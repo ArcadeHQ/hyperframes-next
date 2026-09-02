@@ -2261,25 +2261,29 @@ describe("resolveCompositionDurations strict literal timing", () => {
 });
 
 describe("discoverVideoVisibilityFromTimeline", () => {
-  it("returns scene visibility windows for auto-start videos", async () => {
-    const duration = 2;
-    const sampleStep = 0.1;
-    const windows = [
-      { id: "v0", start: 0.2, end: 0.7 },
-      { id: "v1", start: 0.5, end: 1.2 },
-      { id: "v2", start: 1.0, end: 1.8 },
-      { id: "v3", start: 0.0, end: 0.4 },
-    ];
+  type OpacityEl = {
+    id?: string;
+    opacityAt: (t: number) => number;
+    parentElement: OpacityEl | null;
+  };
 
-    type SceneEl = { opacityAt: (t: number) => number };
+  async function runVisibilityProbe(
+    windows: { id: string; start: number; end: number }[],
+    duration: number,
+    sceneOpacity = 1,
+    hfSeek?: (t: number) => void,
+  ) {
     const videos = windows.map((win) => {
-      const sceneEl: SceneEl = {
-        opacityAt: (t) => (t >= win.start && t <= win.end ? 1 : 0),
+      const sceneEl: OpacityEl = {
+        opacityAt: () => sceneOpacity,
+        parentElement: null,
       };
-      return {
+      const videoEl: OpacityEl = {
         id: win.id,
-        closest: (selector: string) => (selector === ".scene" ? sceneEl : null),
+        opacityAt: (t) => (t >= win.start && t <= win.end ? 1 : 0),
+        parentElement: sceneEl,
       };
+      return videoEl;
     });
 
     let currentTime = 0;
@@ -2287,6 +2291,16 @@ describe("discoverVideoVisibilityFromTimeline", () => {
     const previousDocument = globalThis.document;
 
     globalThis.window = {
+      ...(hfSeek
+        ? {
+            __hf: {
+              seek: (time: number) => {
+                currentTime = time;
+                hfSeek(time);
+              },
+            },
+          }
+        : {}),
       __timelines: {
         root: {
           totalTime: (time: number) => {
@@ -2294,7 +2308,7 @@ describe("discoverVideoVisibilityFromTimeline", () => {
           },
         },
       },
-      getComputedStyle: (el: SceneEl) => ({
+      getComputedStyle: (el: OpacityEl) => ({
         opacity: String(el.opacityAt(currentTime)),
       }),
     } as typeof globalThis.window;
@@ -2311,22 +2325,52 @@ describe("discoverVideoVisibilityFromTimeline", () => {
       const page = {
         evaluate: async (fn: (arg: number) => unknown, arg: number) => fn(arg),
       };
-
-      const result = await discoverVideoVisibilityFromTimeline(page as never, duration);
-
-      expect(result).toHaveLength(windows.length);
-      for (const win of windows) {
-        const found = result.find((entry) => entry.videoId === win.id);
-        expect(found).toBeDefined();
-        expect(found!.visibleStart).toBeGreaterThanOrEqual(win.start - sampleStep);
-        expect(found!.visibleStart).toBeLessThanOrEqual(win.start + sampleStep);
-        expect(found!.visibleEnd).toBeGreaterThanOrEqual(win.end - sampleStep);
-        expect(found!.visibleEnd).toBeLessThanOrEqual(win.end + sampleStep);
-      }
+      return await discoverVideoVisibilityFromTimeline(page as never, duration);
     } finally {
       globalThis.window = previousWindow;
       globalThis.document = previousDocument;
     }
+  }
+
+  it("returns video effective-opacity windows for auto-start videos", async () => {
+    const duration = 2;
+    const sampleStep = 0.1;
+    const windows = [
+      { id: "v0", start: 0.2, end: 0.7 },
+      { id: "v1", start: 0.5, end: 1.2 },
+      { id: "v2", start: 1.0, end: 1.8 },
+      { id: "v3", start: 0.0, end: 0.4 },
+    ];
+
+    const result = await runVisibilityProbe(windows, duration);
+
+    expect(result).toHaveLength(windows.length);
+    for (const win of windows) {
+      const found = result.find((entry) => entry.videoId === win.id);
+      expect(found).toBeDefined();
+      expect(found!.visibleStart).toBeGreaterThanOrEqual(win.start - sampleStep);
+      expect(found!.visibleStart).toBeLessThanOrEqual(win.start + sampleStep);
+      expect(found!.visibleEnd).toBeGreaterThanOrEqual(win.end - sampleStep);
+      expect(found!.visibleEnd).toBeLessThanOrEqual(win.end + sampleStep);
+    }
+  });
+
+  it("does not treat a fully-opaque .scene as the video window", async () => {
+    const result = await runVisibilityProbe([{ id: "clip", start: 0.8, end: 1.4 }], 2, 1);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.videoId).toBe("clip");
+    expect(result[0]!.visibleStart).toBeGreaterThan(0.6);
+    expect(result[0]!.visibleStart).toBeLessThanOrEqual(0.9);
+    expect(result[0]!.visibleEnd).toBeGreaterThanOrEqual(1.3);
+    expect(result[0]!.visibleEnd).toBeLessThanOrEqual(1.5);
+  });
+
+  it("prefers window.__hf.seek so nested GSAP updates", async () => {
+    const sought: number[] = [];
+    await runVisibilityProbe([{ id: "clip", start: 0.5, end: 1.2 }], 2, 1, (t) => {
+      sought.push(t);
+    });
+    expect(sought.length).toBeGreaterThan(0);
   });
 });
 describe("sub-composition variable injection (render path, #2064)", () => {
