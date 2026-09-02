@@ -1,5 +1,6 @@
 {
   "upstream": "upstream/main",
+  "base": "main",
   "integrationBranch": "arcade",
   "patches": [
     {
