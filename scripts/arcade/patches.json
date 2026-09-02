@@ -18,6 +18,10 @@
     {
       "branch": "patch/jump-seek-css-settle",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/discover-host-window",
+      "keepLocal": true
     }
   ]
 }
