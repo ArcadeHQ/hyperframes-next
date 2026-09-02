@@ -120,6 +120,33 @@ function toAbsoluteWindow(
   return { start: absoluteStart, end: Math.min(absoluteEnd, window.limit) };
 }
 
+interface HostMappedClip {
+  start: number;
+  end: number;
+}
+
+/**
+ * Shift a browser-discovered clip onto the root timeline using the same host
+ * windows as {@link collectRenderMedia}. Compile never sees empty-src media;
+ * discover then adds it at authored `data-start` (often scene-local 0).
+ * Offset/limit only — the same shape nestedHostWindow keeps — so this
+ * keep-local does not import mapClipThroughHostWindow.
+ */
+export const createHostWindowMapper = (html: string) => {
+  const windows = collectHostWindows(html);
+  return (id: string, start: number, end: number): HostMappedClip | null => {
+    const window = windows.get(id) ?? ROOT_WINDOW;
+    const authoredEnd = end > 0 ? end : Infinity;
+    const absoluteStart = start + window.offset;
+    if (absoluteStart >= window.limit) return null;
+    const absoluteEnd = Math.min(authoredEnd + window.offset, window.limit);
+    return {
+      start: absoluteStart,
+      end: Number.isFinite(absoluteEnd) ? absoluteEnd : 0,
+    };
+  };
+};
+
 export interface RenderMedia {
   videos: VideoElement[];
   audios: AudioElement[];
