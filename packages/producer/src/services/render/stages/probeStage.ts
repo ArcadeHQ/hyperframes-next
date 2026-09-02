@@ -71,6 +71,7 @@ import type { RenderJob } from "../../renderOrchestrator.js";
 import { isActionableProbeFailure } from "./probeFailures.js";
 import { preflightCompositionAssetMediaTypes } from "../../assetMediaType.js";
 import { resolveCaptureImageFormat } from "../captureImageFormat.js";
+import { createHostWindowMapper } from "../../hostWindowMapper.js";
 
 export interface ProbeStageInput {
   projectDir: string;
@@ -530,6 +531,7 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
       const existingImageIds = new Set(composition.images.map((image) => image.id));
 
       pruneMutedBrowserMedia(composition, browserMedia, existingAudioIds);
+      const mapHost = createHostWindowMapper(compiled.html);
 
       for (const el of browserMedia) {
         if (!el.src || el.src === "about:blank") continue;
@@ -577,12 +579,17 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
               }
             }
           } else {
-            // New video discovered from browser
+            const placed = mapHost(
+              el.id,
+              el.start,
+              resolveBrowserMediaEnd(el.start, el.end, el.duration),
+            );
+            if (!placed) continue;
             composition.videos.push({
               id: el.id,
               src,
-              start: el.start,
-              end: resolveBrowserMediaEnd(el.start, el.end, el.duration),
+              start: placed.start,
+              end: placed.end,
               mediaStart: el.mediaStart,
               loop: el.loop,
               hasAudio: el.hasAudio && !el.muted,
@@ -624,11 +631,17 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
               }
             }
           } else {
+            const placed = mapHost(
+              el.id,
+              el.start,
+              resolveBrowserMediaEnd(el.start, el.end, el.duration),
+            );
+            if (!placed) continue;
             composition.audios.push({
               id: el.id,
               src,
-              start: el.start,
-              end: resolveBrowserMediaEnd(el.start, el.end, el.duration),
+              start: placed.start,
+              end: placed.end,
               mediaStart: el.mediaStart,
               layer: 0,
               volume: el.volume,
@@ -655,11 +668,17 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
               }
             }
           } else {
+            const placed = mapHost(
+              el.id,
+              el.start,
+              resolveBrowserMediaEnd(el.start, el.end, el.duration),
+            );
+            if (!placed) continue;
             composition.images.push({
               id: el.id,
               src,
-              start: el.start,
-              end: resolveBrowserMediaEnd(el.start, el.end, el.duration),
+              start: placed.start,
+              end: placed.end,
             });
             existingImageIds.add(el.id);
           }
