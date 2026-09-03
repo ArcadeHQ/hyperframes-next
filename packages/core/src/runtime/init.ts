@@ -5304,6 +5304,7 @@ export function initSandboxRuntimeModular(): void {
       pausedFrames.clear();
       heldSeek = null;
       previewSeek?.cancel();
+      if (!renderCaptureSeekStarted) settleTimelinesForRender();
       renderCaptureSeekStarted = true;
       const seekTime = resolveRenderSeekTime(
         Math.max(0, Number(timeSeconds) || 0),
@@ -5694,15 +5695,19 @@ export function initSandboxRuntimeModular(): void {
         !!entry[1] && typeof entry[1] === "object" && entry[0] !== rootCompositionId,
     );
   };
-  const seekStandaloneRegisteredTimelines = (
+  // Each non-root registered timeline with the local time it shows at a root time.
+  // `pastClipEnd` keeps a scene's clock running after its clip ends, for the settle pass.
+  const standaloneRegisteredTimelineTimes = (
     timeSeconds: number,
     revision: number,
-    options?: RuntimeSeekOptions,
+    options?: { pastClipEnd?: boolean },
   ) => {
     if (sceneClocksRevision !== revision || renderCaptureSeekStarted) {
       sceneClocks = new WeakMap();
       sceneClocksRevision = revision;
     }
+    const out: Array<{ compositionId: string; timeline: RuntimeTimelineLike; localTime: number }> =
+      [];
     for (const [compositionId, timeline] of sceneTimelines()) {
       const scene = sceneClockOf(compositionId, timeline);
       if (!scene) continue;
@@ -5710,7 +5715,11 @@ export function initSandboxRuntimeModular(): void {
         scene.playbackStart +
         sourceTimeAt(
           scene.rate,
-          Math.max(0, Math.min(timeSeconds, scene.hiddenFrom) - scene.start),
+          Math.max(
+            0,
+            (options?.pastClipEnd ? timeSeconds : Math.min(timeSeconds, scene.hiddenFrom)) -
+              scene.start,
+          ),
         );
       const localTime = Math.max(
         0,
@@ -5718,6 +5727,21 @@ export function initSandboxRuntimeModular(): void {
           ? Math.min(scene.timelineDuration, sourceTime)
           : sourceTime,
       );
+      out.push({ compositionId, timeline, localTime });
+    }
+    return out;
+  };
+
+  const seekStandaloneRegisteredTimelines = (
+    timeSeconds: number,
+    revision: number,
+    options?: RuntimeSeekOptions & { pastClipEnd?: boolean },
+  ) => {
+    for (const { compositionId, timeline, localTime } of standaloneRegisteredTimelineTimes(
+      timeSeconds,
+      revision,
+      options,
+    )) {
       // A scene before or after its clip rests where the last frame left it: no redraw.
       if (!renderCaptureSeekStarted && restsAt(timeline, localTime)) continue;
       seekSceneTimeline(compositionId, timeline, localTime, options);
@@ -5879,6 +5903,148 @@ export function initSandboxRuntimeModular(): void {
       }
     }
     return pageAnimations;
+  }
+
+  // Before the first render seek, play the GSAP timelines through once and
+  // rewind them, like a looped preview does. `from()`/`fromTo()` default to
+  // immediateRender and write their from-vars when constructed, so a later
+  // exit `fromTo(el, { opacity: 1 }, { opacity: 0 })` un-hides a CSS-hidden
+  // element until something renders the timeline backward past its reveal
+  // tween. The render seeks 0 → ascending only, so the element paints before
+  // its reveal. The pass lands on the render's own frames, because a tween
+  // reads its lazy start values on the frame it starts, but only on the frames
+  // around a tween starting or finishing (settleFrameTimes): every seek runs the
+  // page's tween setters, and a scene redrawing WebGL on each made a pass over
+  // every frame outlast the capture's protocol timeout.
+  function settleTimelinesForRender() {
+    const tl = state.capturedTimeline;
+    if (!tl || typeof tl.totalTime !== "function") return;
+    const duration = getSafeTimelineDurationSeconds(tl, 0);
+    const fps = state.canonicalFps;
+    if (!(duration > 0) || !(fps > 0)) return;
+    const revision = readCompositionTimingRevision();
+    const seek = { suppressEvents: true, pastClipEnd: true };
+    // Every settle seek is a first render, so tweens read the authored style, not a hidden clip's.
+    const hideClipsAgain = showHiddenClips();
+    try {
+      for (const t of [...settleFrameTimes(tl, duration, fps, revision), 0]) {
+        // Scenes first, then the root, like a render seek.
+        seekStandaloneRegisteredTimelines(t, revision, seek);
+        try {
+          pauseTimelineIfPossible(tl);
+          seekGsapTimeline(tl, t, true, gsapStructureOf(tl), renderFps);
+        } catch (err) {
+          swallow("runtime.init.transport.settle", err);
+        }
+      }
+    } finally {
+      hideClipsAgain();
+    }
+  }
+
+  // Times are compared with this slack: GSAP starts a child a hair before its
+  // exact start, and summed start times carry float error of the same order.
+  const SETTLE_EPSILON_SECONDS = 1e-6;
+
+  // Sorted local times, in a timeline's own time, from which GSAP starts or
+  // finishes each of its tweens (each target of a stagger or keyframes tween
+  // included); null when the timeline cannot list its children. Mapped the way
+  // readOneCycleEndSeconds maps ends: a nested timeline's timeScale, and an
+  // inner timeline stretched to its tween's duration. GSAP renders a child only
+  // once its parent's time has moved past the parent's own start, so a child
+  // at its parent's start begins on the first frame after it.
+  function settleEventTimes(timeline: RuntimeTimelineLike): number[] | null {
+    if (typeof timeline.getChildren !== "function") return null;
+    const times: number[] = [];
+    const walk = (
+      children: RuntimeTimelineChildLike[],
+      offset: number,
+      factor: number,
+      parentStart: number,
+    ) => {
+      const after = (time: number) =>
+        Math.max(time - SETTLE_EPSILON_SECONDS, parentStart + 2 * SETTLE_EPSILON_SECONDS);
+      for (const child of children) {
+        const start = offset + (Number(child.startTime?.()) || 0) * factor;
+        const scale = Math.abs(Number((child as { timeScale?: () => number }).timeScale?.()) || 1);
+        const end =
+          start +
+          ((Number((child as { totalDuration?: () => number }).totalDuration?.()) || 0) / scale) *
+            factor;
+        times.push(after(start));
+        if (end < LOOP_INFLATED_TIMELINE_SECONDS) times.push(after(end));
+        const nested = child.getChildren
+          ? child
+          : (child as { timeline?: RuntimeTimelineChildLike }).timeline;
+        if (!nested?.getChildren) continue;
+        const stretch = Number(child.duration?.()) / Number(nested.duration?.());
+        const inner = (Number.isFinite(stretch) && stretch > 0 ? stretch : 1) / scale;
+        walk(
+          nested.getChildren(false, true, true),
+          start,
+          factor * inner,
+          Math.max(parentStart, start),
+        );
+      }
+    };
+    walk(timeline.getChildren(false, true, true), 0, 1, 0);
+    return times.sort((a, b) => a - b);
+  }
+
+  // Frames of the render's 1/fps grid around each tween start or finish of the
+  // root or a registered timeline: the frame it happens on, the one before (a
+  // tween reads start values another tween wrote on the previous frame) and the
+  // one after (GSAP flushes a lazily started tween on the next render). Between
+  // those frames every tween only moves with time, so skipping them leaves the
+  // settled state unchanged; a repeatRefresh tween, which re-reads its start
+  // values on each repeat, is the exception. Every frame when a timeline cannot
+  // list its tweens.
+  function settleFrameTimes(
+    root: RuntimeTimelineLike,
+    duration: number,
+    fps: number,
+    revision: number,
+  ): number[] {
+    const frameCount = Math.ceil(duration * fps);
+    const frameTime = (frame: number) => Math.min(duration, frame / fps);
+    const registered = (t: number) =>
+      standaloneRegisteredTimelineTimes(t, revision, { pastClipEnd: true });
+    const localTimes = (t: number) =>
+      [{ timeline: root, localTime: t }, ...registered(t)].map(({ localTime }) => localTime);
+    const timelines = [root, ...registered(0).map(({ timeline }) => timeline)];
+    const tracks: Array<{ events: number[]; next: number }> = [];
+    for (const timeline of timelines) {
+      const events = settleEventTimes(timeline);
+      if (!events) return Array.from({ length: frameCount }, (_, i) => frameTime(i + 1));
+      tracks.push({ events, next: 0 });
+    }
+    // Advance each track past the events at or before its time; true if any moved.
+    const cross = (times: number[]) => {
+      let crossed = false;
+      tracks.forEach((track, i) => {
+        while (
+          track.next < track.events.length &&
+          (track.events[track.next] ?? 0) <= (times[i] ?? 0)
+        ) {
+          track.next++;
+          crossed = true;
+        }
+      });
+      return crossed;
+    };
+    const frames = new Set<number>();
+    for (let frame = 1; frame <= frameCount; frame++) {
+      if (cross(localTimes(frameTime(frame)))) {
+        frames
+          .add(frame - 1)
+          .add(frame)
+          .add(frame + 1);
+      }
+    }
+    return [...frames]
+      .filter((frame) => frame >= 1 && frame <= frameCount)
+      .sort((a, b) => a - b)
+      .map(frameTime);
   }
 
   // True while the Studio is mid-drag on an element (the gesture marker is
