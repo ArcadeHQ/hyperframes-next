@@ -2584,6 +2584,7 @@ export function initSandboxRuntimeModular(): void {
       postState(true);
     },
     renderSeek: (timeSeconds, options) => {
+      if (!renderCaptureSeekStarted) settleTimelinesForRender();
       renderCaptureSeekStarted = true;
       const quantized = quantizeTimeToFrame(
         Math.max(0, Number(timeSeconds) || 0),
@@ -3030,6 +3031,32 @@ export function initSandboxRuntimeModular(): void {
         swallow("runtime.init.transport.adapter", err);
       }
     }
+  }
+
+  // Before the first render seek, play the GSAP timelines through once and
+  // rewind them, like a looped preview does. `from()`/`fromTo()` default to
+  // immediateRender and write their from-vars when constructed, so a later
+  // exit `fromTo(el, { opacity: 1 }, { opacity: 0 })` un-hides a CSS-hidden
+  // element until something renders the timeline backward past its reveal
+  // tween. The render seeks 0 → ascending only, so the element paints before
+  // its reveal. Stepped one frame at a time — a single jump would let GSAP's
+  // lazy start-value capture read stale values for every later tween.
+  function settleTimelinesForRender() {
+    const tl = state.capturedTimeline;
+    if (!tl || typeof tl.totalTime !== "function") return;
+    const duration = getSafeTimelineDurationSeconds(tl, 0);
+    const fps = state.canonicalFps;
+    if (!(duration > 0) || !(fps > 0)) return;
+    const frames = Math.ceil(duration * fps);
+    for (let frame = 1; frame <= frames; frame++) {
+      const t = Math.min(duration, frame / fps);
+      activateSiblingTimelines(tl);
+      seekRuntimeTimeline(tl, t, "runtime.init.transport.settle", { suppressEvents: true });
+      seekStandaloneRegisteredTimelines(t, { suppressEvents: true });
+    }
+    activateSiblingTimelines(tl);
+    seekRuntimeTimeline(tl, 0, "runtime.init.transport.settle", { suppressEvents: true });
+    seekStandaloneRegisteredTimelines(0, { suppressEvents: true });
   }
 
   // True while the Studio is mid-drag on an element (the gesture marker is

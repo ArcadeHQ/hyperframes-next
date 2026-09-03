@@ -1947,6 +1947,7 @@ describe("initSandboxRuntimeModular", () => {
 
     window.__timelines = { main: rootTimeline };
     initSandboxRuntimeModular();
+    window.__player?.renderSeek(0, { suppressEvents: true }); // settle pass
     seekCalls.length = 0;
 
     window.__player?.renderSeek(2);
@@ -1992,11 +1993,46 @@ describe("initSandboxRuntimeModular", () => {
 
     window.__timelines = { main: rootTimeline };
     initSandboxRuntimeModular();
+    window.__player?.renderSeek(0, { suppressEvents: true }); // settle pass
     seekCalls.length = 0;
 
     window.__player?.renderSeek(2);
 
     expect(seekCalls).toEqual([{ time: 2, suppressEvents: false }]);
+  });
+
+  it("plays the root GSAP timeline through frame by frame and rewinds it before the first render seek", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-root", "true");
+    root.setAttribute("data-start", "0");
+    root.setAttribute("data-duration", "1");
+    root.setAttribute("data-width", "1920");
+    root.setAttribute("data-height", "1080");
+    document.body.appendChild(root);
+
+    const seekCalls: Array<{ time: number; suppressEvents?: boolean }> = [];
+    const rootTimeline = createMockTimeline(1);
+    const originalTotalTime = rootTimeline.totalTime;
+    rootTimeline.totalTime = (time: number, suppressEvents?: boolean) => {
+      seekCalls.push({ time, suppressEvents });
+      return originalTotalTime?.(time, suppressEvents);
+    };
+
+    window.__timelines = { main: rootTimeline };
+    initSandboxRuntimeModular();
+    seekCalls.length = 0;
+
+    window.__player?.renderSeek(0.5, { suppressEvents: true });
+
+    const settle = seekCalls.slice(0, 31);
+    expect(settle.map((c) => c.time)).toEqual([...Array(30)].map((_, i) => (i + 1) / 30).concat(0));
+    expect(settle.every((c) => c.suppressEvents === true)).toBe(true);
+    expect(seekCalls.slice(31)).toEqual([{ time: 0.5, suppressEvents: true }]);
+
+    seekCalls.length = 0;
+    window.__player?.renderSeek(0.6, { suppressEvents: true });
+    expect(seekCalls).toEqual([{ time: 0.6, suppressEvents: true }]);
   });
 
   it("shows pip video at global start time even when host composition starts late", () => {
