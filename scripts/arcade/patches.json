@@ -27,6 +27,9 @@
     {
       "branch": "patch/discover-video-opacity",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/render-settle-pass"
     }
   ]
 }
