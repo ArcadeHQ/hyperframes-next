@@ -2770,6 +2770,7 @@ describe("initSandboxRuntimeModular", () => {
 
     window.__timelines = { main: rootTimeline };
     initSandboxRuntimeModular();
+    window.__player?.renderSeek(0, { suppressEvents: true }); // settle pass
     seekCalls.length = 0;
 
     window.__player?.renderSeek(2);
@@ -2815,11 +2816,222 @@ describe("initSandboxRuntimeModular", () => {
 
     window.__timelines = { main: rootTimeline };
     initSandboxRuntimeModular();
+    window.__player?.renderSeek(0, { suppressEvents: true }); // settle pass
     seekCalls.length = 0;
 
     window.__player?.renderSeek(2);
 
     expect(seekCalls).toEqual([{ time: 2, suppressEvents: false }]);
+  });
+
+  it("settles on the frames around each tween start and finish before the first render seek", () => {
+    // Tweens over 0.2–0.5 and 0.5–1, and a timeline over 0.6–0.9 holding one over 0.7–0.9.
+    const rootTimeline = createMockTimelineOf([
+      mockTween(0.2, 0.3),
+      mockTween(0.5, 0.5),
+      mockNestedTimeline(0.6, 1, [mockTween(0.1, 0.2)]),
+    ]);
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-root", "true");
+    root.setAttribute("data-start", "0");
+    root.setAttribute("data-duration", "1");
+    root.setAttribute("data-width", "1920");
+    root.setAttribute("data-height", "1080");
+    document.body.appendChild(root);
+
+    const seekCalls: Array<{ time: number; suppressEvents?: boolean }> = [];
+    const originalTotalTime = rootTimeline.totalTime;
+    rootTimeline.totalTime = (time: number, suppressEvents?: boolean) => {
+      seekCalls.push({ time, suppressEvents });
+      return originalTotalTime?.(time, suppressEvents);
+    };
+
+    window.__timelines = { main: rootTimeline };
+    initSandboxRuntimeModular();
+    seekCalls.length = 0;
+
+    window.__player?.renderSeek(0.5, { suppressEvents: true });
+
+    // Each start or finish, on frame k of the 30 fps grid, settles frames k-1, k and k+1.
+    const settleFrames = [5, 6, 7, 14, 15, 16, 17, 18, 19, 20, 21, 22, 26, 27, 28, 29, 30];
+    const settle = seekCalls.slice(0, settleFrames.length + 1);
+    expect(settle.map((c) => c.time)).toEqual(settleFrames.map((f) => f / 30).concat(0));
+    expect(settle.every((c) => c.suppressEvents === true)).toBe(true);
+    expect(seekCalls.slice(settleFrames.length + 1)).toEqual([{ time: 0.5, suppressEvents: true }]);
+
+    seekCalls.length = 0;
+    window.__player?.renderSeek(0.6, { suppressEvents: true });
+    expect(seekCalls).toEqual([{ time: 0.6, suppressEvents: true }]);
+  });
+
+  describe("settle under real GSAP", () => {
+    // Runs a scene through the first render seek's settle, then renders every frame. Each
+    // target logs the values GSAP reads when a tween starts, labelled by the root frame being
+    // settled. With `everyFrame`, a registered timeline that cannot list its tweens makes the
+    // settle visit every frame, which is the reference the sparse settle must match.
+    const settle = (
+      build: (scene: gsap.core.Timeline, target: (name: string) => { x: number }) => void,
+      everyFrame: boolean,
+    ) => {
+      document.body.innerHTML = "";
+      const reads: string[] = [];
+      let frame = 0;
+      const targets: Array<{ x: number }> = [];
+      const target = (name: string) => {
+        const proxy = new Proxy(
+          { x: 0 },
+          {
+            get: (t, p) => {
+              if (p === "x") reads.push(`${name}@${frame}=${t.x.toFixed(4)}`);
+              return t[p as "x"];
+            },
+          },
+        );
+        targets.push(proxy);
+        return proxy;
+      };
+      const scene = gsap.timeline({ paused: true });
+      build(scene, target);
+
+      const root = document.createElement("div");
+      root.setAttribute("data-composition-id", "main");
+      root.setAttribute("data-root", "true");
+      root.setAttribute("data-start", "0");
+      root.setAttribute("data-duration", "3");
+      root.setAttribute("data-width", "1920");
+      root.setAttribute("data-height", "1080");
+      const host = document.createElement("div");
+      host.setAttribute("data-composition-id", "scene");
+      host.setAttribute("data-start", "0.35");
+      host.setAttribute("data-duration", "2.6");
+      root.appendChild(host);
+      document.body.appendChild(root);
+
+      const main = gsap.timeline({ paused: true });
+      const totalTime = main.totalTime.bind(main);
+      (main as unknown as { totalTime: (t: number, s?: boolean) => unknown }).totalTime = (
+        t,
+        s,
+      ) => {
+        frame = Math.round(t * 30);
+        return totalTime(t, s);
+      };
+      window.gsap = gsap as unknown as typeof window.gsap;
+      window.__timelines = {
+        main: main as unknown as RuntimeTimelineLike,
+        scene: scene as unknown as RuntimeTimelineLike,
+      };
+      if (everyFrame) {
+        const opaque = createMockTimeline(3);
+        delete opaque.getChildren;
+        const opaqueHost = document.createElement("div");
+        opaqueHost.setAttribute("data-composition-id", "opaque");
+        opaqueHost.setAttribute("data-start", "0");
+        opaqueHost.setAttribute("data-duration", "3");
+        root.appendChild(opaqueHost);
+        window.__timelines.opaque = opaque;
+      }
+      initSandboxRuntimeModular();
+      window.__player?.renderSeek(0, { suppressEvents: true });
+      const settleReads = [...reads].sort();
+      const states: string[] = [];
+      for (let f = 0; f <= 90; f++) {
+        window.__player?.renderSeek(f / 30, { suppressEvents: true });
+        states.push(targets.map((o) => o.x.toFixed(4)).join(","));
+      }
+      return { settleReads, states };
+    };
+
+    const expectSameAsEveryFrame = (
+      build: (scene: gsap.core.Timeline, target: (name: string) => { x: number }) => void,
+    ) => {
+      const reference = settle(build, true);
+      const settled = settle(build, false);
+      expect(settled.settleReads.length).toBeGreaterThan(0);
+      expect(settled.settleReads).toEqual(reference.settleReads);
+      expect(settled.states).toEqual(reference.states);
+    };
+
+    it("lets each tween finish on its own frame", () => {
+      // Without a settle frame at each finish, the tween at 0.5 and the fromTo complete in the
+      // same seek as the tweens starting at 1.2 and 1.3 read the value they leave behind.
+      expectSameAsEveryFrame((scene, target) => {
+        const a = target("a");
+        scene.to(a, { x: 70, duration: 0.9 }, 1.2);
+        scene.to(a, { x: 21, duration: 0.4 }, 0.5);
+        scene.fromTo(a, { x: 75 }, { x: 70, duration: 0.6 }, 0.4);
+        scene.to(a, { x: 62, duration: 0.4 }, 1.3);
+      });
+    });
+
+    it("starts a tween in a nested timeline on its frame at the timeline's timeScale", () => {
+      // At 2x, the nested tween at 0.4 starts 0.2 after the timeline, at 0.7 in the scene.
+      expectSameAsEveryFrame((scene, target) => {
+        const a = target("a");
+        scene.to(a, { x: 100, duration: 2 }, 0);
+        scene.add(gsap.timeline().to(a, { x: 0, duration: 0.2 }, 0.4).timeScale(2), 0.5);
+      });
+    });
+
+    it("starts a keyframe on its frame when the keyframes are stretched to the tween", () => {
+      // Three seconds of keyframes squeezed into one: the second starts at 1.4 + 2/3, not 3.4.
+      expectSameAsEveryFrame((scene, target) => {
+        const a = target("a");
+        scene.to(
+          a,
+          {
+            keyframes: [
+              { x: 73, duration: 1 },
+              { x: 21, duration: 1, delay: 1 },
+            ],
+            duration: 1,
+          },
+          1.4,
+        );
+        scene.to(a, { x: 54, duration: 1.3 }, 1.1);
+      });
+    });
+
+    it("starts each target of a stagger on its own frame", () => {
+      // The last dot starts at 1 + 2 × 0.25 = 1.5 and reads the long tween's value then.
+      expectSameAsEveryFrame((scene, target) => {
+        const a = target("a");
+        const dots = [target("d0"), target("d1"), target("d2")];
+        scene.to([a, ...dots], { x: 100, duration: 2.5 }, 0);
+        scene.to(dots, { x: 0, duration: 0.1, stagger: 0.25 }, 1);
+      });
+    });
+  });
+
+  it("settles on every frame when a timeline cannot list its tweens", () => {
+    const rootTimeline = createMockTimeline(1);
+    delete rootTimeline.getChildren;
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-root", "true");
+    root.setAttribute("data-start", "0");
+    root.setAttribute("data-duration", "1");
+    root.setAttribute("data-width", "1920");
+    root.setAttribute("data-height", "1080");
+    document.body.appendChild(root);
+
+    const seekCalls: Array<{ time: number; suppressEvents?: boolean }> = [];
+    const originalTotalTime = rootTimeline.totalTime;
+    rootTimeline.totalTime = (time: number, suppressEvents?: boolean) => {
+      seekCalls.push({ time, suppressEvents });
+      return originalTotalTime?.(time, suppressEvents);
+    };
+
+    window.__timelines = { main: rootTimeline };
+    initSandboxRuntimeModular();
+    seekCalls.length = 0;
+
+    window.__player?.renderSeek(0.5, { suppressEvents: true });
+
+    const settle = seekCalls.slice(0, 31);
+    expect(settle.map((c) => c.time)).toEqual([...Array(30)].map((_, i) => (i + 1) / 30).concat(0));
+    expect(seekCalls.slice(31)).toEqual([{ time: 0.5, suppressEvents: true }]);
   });
 
   it("shows pip video at global start time even when host composition starts late", () => {
