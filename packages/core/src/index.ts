@@ -158,8 +158,13 @@ export {
   assignMediaRenderIds,
 } from "./compiler/mediaRenderIds";
 export {
+  IDENTITY_HOST_WINDOW,
   mapClipThroughHostWindow,
   resolveNestedHostWindow,
+  sourceTimeAt,
+  type HostStartResolver,
+  type MappedClip,
+  type MappedMedia,
   type NestedHostWindow,
 } from "./runtime/nestedHostWindow";
 

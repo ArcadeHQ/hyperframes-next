@@ -27,8 +27,9 @@ describe("collectRenderMedia host windows", () => {
     const { videos, audios } = collectRenderMedia(html);
     expect(videos.find((video) => video.id === "local")).toMatchObject({ start: 4, end: 6 });
     expect(videos.find((video) => video.id === "global")).toMatchObject({ start: 2, end: 4 });
-    expect(audios.find((audio) => audio.id === "local-audio")).toMatchObject({ start: 4, end: 0 });
-    expect(audios.find((audio) => audio.id === "global-audio")).toMatchObject({ start: 2, end: 0 });
+    // Open-ended tracks run to the host slot's end (2 + data-duration 6).
+    expect(audios.find((audio) => audio.id === "local-audio")).toMatchObject({ start: 4, end: 8 });
+    expect(audios.find((audio) => audio.id === "global-audio")).toMatchObject({ start: 2, end: 8 });
   });
 });
 
@@ -57,7 +58,8 @@ describe("collectRenderMedia nested in-point", () => {
         id: "scene-video",
         start: videoStart,
         end: hostStart + 2,
-        mediaStart: 0.5,
+        origin: videoStart - 0.5,
+        mediaStart: 0,
       }),
     );
     expect(media.audios).not.toContainEqual(expect.objectContaining({ id: "pre-audio" }));
@@ -77,9 +79,45 @@ describe("collectRenderMedia nested in-point", () => {
   </div>
 </div>`;
     const media = collectRenderMedia(html);
+    // The host's data-duration bounds the slot: the 4s clip is cut at 12, not 14.
     expect(media.videos.find((v) => v.id === "scene-video")).toMatchObject({
       start: 10,
-      end: 14,
+      origin: 10,
+      end: 12,
+    });
+  });
+
+  it("bounds nested audio by a host that only carries data-duration", () => {
+    const html = `<div data-composition-id="root" data-start="0">
+  <div data-composition-id="scene" data-composition-src="scene.html"
+       data-start="1" data-duration="2" data-playback-start="1.5">
+    <audio id="bed" data-hf-render-id="bed" src="bed.wav" data-start="0"></audio>
+  </div>
+</div>`;
+    const media = collectRenderMedia(html);
+    expect(media.audios.find((a) => a.id === "bed")).toMatchObject({
+      start: 1,
+      end: 3,
+      origin: -0.5,
+      mediaStart: 0,
+    });
+  });
+
+  it("composes host playback-rate onto nested media", () => {
+    const html = `<div data-composition-id="root" data-start="0">
+  <div data-composition-id="scene" data-composition-file="scene.html"
+       data-start="5" data-end="7" data-playback-rate="2">
+    <video id="scene-video" data-hf-render-id="scene-video" src="clip.mp4"
+           data-start="0" data-end="4" data-duration="4"></video>
+  </div>
+</div>`;
+    const media = collectRenderMedia(html);
+    expect(media.videos.find((v) => v.id === "scene-video")).toMatchObject({
+      start: 5,
+      end: 7,
+      origin: 5,
+      mediaStart: 0,
+      playbackRate: 2,
     });
   });
 });

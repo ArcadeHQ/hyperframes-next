@@ -16,64 +16,58 @@
 
 import { parseHTML } from "linkedom";
 import {
+  IDENTITY_HOST_WINDOW,
   MEDIA_RENDER_ID_ATTR,
   mapClipThroughHostWindow,
   resolveNestedHostWindow,
+  type MappedClip,
   type NestedHostWindow,
 } from "@hyperframes/core";
+import { MEDIA_START_BASIS_ATTR, readMediaStartBasis } from "@hyperframes/core/media-timing";
 import {
   parseVideoElements,
   parseImageElements,
   parseAudioElements,
+  resolveReferencedStart,
+  type RefResolverEl,
   type VideoElement,
   type ImageElement,
   type AudioElement,
 } from "@hyperframes/engine";
 
-const ROOT_WINDOW: NestedHostWindow = {
-  offset: 0,
-  limit: Infinity,
-  windowStart: 0,
-  hasInPoint: false,
-};
-
 /**
  * Map each render id to the window of the composition hosts it is nested in.
  * Keyed on the render id rather than document position so the caller never has
  * to assume two separate parses walk the document in the same order.
+ *
+ * Host `data-start` goes through `resolveReferencedStart`, the same resolver
+ * media uses, so an id-ref to a sibling slot (`data-start="hook"`) lands where
+ * that slot ends instead of at `parseFloat("hook")`.
+ *
+ * Legacy media authored in root time (`data-hf-media-start-basis="global"`)
+ * keeps its own start: the hosts only bound it, they do not shift it.
  */
 function collectHostWindows(html: string): Map<string, NestedHostWindow> {
   const { document } = parseHTML(html);
+  const startCache = new Map<RefResolverEl, number>();
+  const visiting = new Set<RefResolverEl>();
+  const hostStart = (host: RefResolverEl): number =>
+    resolveReferencedStart(document, host, startCache, visiting);
+
   const windows = new Map<string, NestedHostWindow>();
   for (const element of document.querySelectorAll(`[${MEDIA_RENDER_ID_ATTR}]`)) {
     const renderId = element.getAttribute(MEDIA_RENDER_ID_ATTR);
     if (!renderId) continue;
-    windows.set(renderId, resolveNestedHostWindow(element) ?? ROOT_WINDOW);
+    const window = resolveNestedHostWindow(element, hostStart) ?? IDENTITY_HOST_WINDOW;
+    const global = readMediaStartBasis(element.getAttribute(MEDIA_START_BASIS_ATTR)) === "global";
+    windows.set(
+      renderId,
+      global
+        ? { ...IDENTITY_HOST_WINDOW, limit: window.limit, windowStart: window.windowStart }
+        : window,
+    );
   }
   return windows;
-}
-
-function mapMediaClip<T extends { start: number; end: number; mediaStart?: number }>(
-  clip: T,
-  window: NestedHostWindow,
-  bumpMediaStart: boolean,
-): T | null {
-  const mapped = mapClipThroughHostWindow(
-    clip.start,
-    clip.end,
-    clip.mediaStart,
-    window,
-    bumpMediaStart,
-  );
-  if (!mapped) return null;
-  return bumpMediaStart
-    ? {
-        ...clip,
-        start: mapped.start,
-        end: mapped.end,
-        mediaStart: mapped.mediaStart ?? clip.mediaStart,
-      }
-    : { ...clip, start: mapped.start, end: mapped.end };
 }
 
 export interface RenderMedia {
@@ -92,18 +86,26 @@ export interface RenderMedia {
  */
 export function collectRenderMedia(html: string): RenderMedia {
   const windows = collectHostWindows(html);
-  const windowFor = (id: string): NestedHostWindow => windows.get(id) ?? ROOT_WINDOW;
+  const windowFor = (id: string): NestedHostWindow => windows.get(id) ?? IDENTITY_HOST_WINDOW;
+
+  // A clip mapped to a zero-width window falls outside its slot: nothing to render.
+  const isVisible = (clip: MappedClip): boolean => clip.end > clip.start;
 
   const videos: VideoElement[] = [];
   for (const video of parseVideoElements(html)) {
-    const clipped = mapMediaClip(video, windowFor(video.id), true);
-    if (clipped) videos.push(clipped);
+    const mapped = mapClipThroughHostWindow(
+      video.start,
+      video.end,
+      windowFor(video.id),
+      video.playbackRate,
+    );
+    if (isVisible(mapped)) videos.push({ ...video, ...mapped });
   }
 
   const images: ImageElement[] = [];
   for (const image of parseImageElements(html)) {
-    const clipped = mapMediaClip(image, windowFor(image.id), false);
-    if (clipped) images.push(clipped);
+    const mapped = mapClipThroughHostWindow(image.start, image.end, windowFor(image.id));
+    if (isVisible(mapped)) images.push({ ...image, start: mapped.start, end: mapped.end });
   }
 
   // A <video data-has-audio> track is reported as "<renderId>-audio"; strip the
@@ -114,12 +116,14 @@ export function collectRenderMedia(html: string): RenderMedia {
     // The mixer reads end === 0 as "run to the natural media length", so an
     // unbounded track must stay unbounded rather than collapse onto its start.
     const authoredEnd = audio.end > 0 ? audio.end : Infinity;
-    const clipped = mapMediaClip({ ...audio, end: authoredEnd }, windowFor(elementId), true);
-    if (!clipped) continue;
-    audios.push({
-      ...clipped,
-      end: Number.isFinite(clipped.end) ? clipped.end : 0,
-    });
+    const mapped = mapClipThroughHostWindow(
+      audio.start,
+      authoredEnd,
+      windowFor(elementId),
+      audio.playbackRate,
+    );
+    if (!isVisible(mapped)) continue;
+    audios.push({ ...audio, ...mapped, end: Number.isFinite(mapped.end) ? mapped.end : 0 });
   }
 
   return { videos, audios, images };

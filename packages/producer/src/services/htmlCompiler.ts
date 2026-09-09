@@ -22,6 +22,7 @@ import {
   CSS_URL_RE,
   isNonRelativeUrl,
   parseStrictFiniteTimingNumber,
+  readElementPlaybackRate,
   readMediaStart,
   redactTelemetryString,
   resolveNaturalMediaTimelineDurationFromValues,
@@ -2164,6 +2165,8 @@ export interface BrowserMediaElement {
   /** True when compilation inferred duration from the fallback source. */
   durationInferred: boolean;
   mediaStart: number;
+  /** The element's own `data-playback-rate`, normalized — not composed with any host rate. */
+  playbackRate: number;
   loop: boolean;
   hasAudio: boolean;
   volume: number;
@@ -2189,6 +2192,7 @@ export async function discoverMediaFromBrowser(page: Page): Promise<BrowserMedia
       durationInferred: boolean;
       playbackStartRaw: string | null;
       mediaStartRaw: string | null;
+      playbackRateRaw: string | null;
       loop: boolean;
       hasAudio: boolean;
       volume: number;
@@ -2239,6 +2243,7 @@ export async function discoverMediaFromBrowser(page: Page): Promise<BrowserMedia
         : (htmlEl as HTMLVideoElement | HTMLAudioElement).duration;
       const playbackStartRaw = htmlEl.getAttribute("data-playback-start");
       const mediaStartRaw = htmlEl.getAttribute("data-media-start");
+      const playbackRateRaw = htmlEl.getAttribute("data-playback-rate");
       const loop = htmlEl.hasAttribute("loop");
       const hasAudio = htmlEl.getAttribute("data-has-audio") === "true";
       const volume = parseFloat(htmlEl.getAttribute("data-volume") || "1");
@@ -2257,6 +2262,7 @@ export async function discoverMediaFromBrowser(page: Page): Promise<BrowserMedia
         durationInferred,
         playbackStartRaw,
         mediaStartRaw,
+        playbackRateRaw,
         loop,
         hasAudio,
         volume,
@@ -2268,21 +2274,34 @@ export async function discoverMediaFromBrowser(page: Page): Promise<BrowserMedia
   });
 
   return elements.map(
-    ({ endRaw, durationRaw, intrinsicDuration, playbackStartRaw, mediaStartRaw, ...element }) => ({
-      ...element,
-      end: parseStrictFiniteTimingNumber(endRaw) ?? 0,
-      duration:
-        element.durationInferred && Number.isFinite(intrinsicDuration) && intrinsicDuration > 0
-          ? intrinsicDuration
-          : (parseStrictFiniteTimingNumber(durationRaw) ?? 0),
-      mediaStart: readMediaStart({
+    ({
+      endRaw,
+      durationRaw,
+      intrinsicDuration,
+      playbackStartRaw,
+      mediaStartRaw,
+      playbackRateRaw,
+      ...element
+    }) => {
+      const attrs = {
         getAttribute(name: string) {
           if (name === "data-playback-start") return playbackStartRaw;
           if (name === "data-media-start") return mediaStartRaw;
+          if (name === "data-playback-rate") return playbackRateRaw;
           return null;
         },
-      }),
-    }),
+      };
+      return {
+        ...element,
+        end: parseStrictFiniteTimingNumber(endRaw) ?? 0,
+        duration:
+          element.durationInferred && Number.isFinite(intrinsicDuration) && intrinsicDuration > 0
+            ? intrinsicDuration
+            : (parseStrictFiniteTimingNumber(durationRaw) ?? 0),
+        mediaStart: readMediaStart(attrs),
+        playbackRate: readElementPlaybackRate(attrs),
+      };
+    },
   );
 }
 
