@@ -18,6 +18,7 @@ import { parseHTML } from "linkedom";
 import {
   IDENTITY_HOST_WINDOW,
   MEDIA_RENDER_ID_ATTR,
+  boundsOnly,
   mapClipThroughHostWindow,
   resolveNestedHostWindow,
   type MappedClip,
@@ -60,12 +61,7 @@ function collectHostWindows(html: string): Map<string, NestedHostWindow> {
     if (!renderId) continue;
     const window = resolveNestedHostWindow(element, hostStart) ?? IDENTITY_HOST_WINDOW;
     const global = readMediaStartBasis(element.getAttribute(MEDIA_START_BASIS_ATTR)) === "global";
-    windows.set(
-      renderId,
-      global
-        ? { ...IDENTITY_HOST_WINDOW, limit: window.limit, windowStart: window.windowStart }
-        : window,
-    );
+    windows.set(renderId, global ? boundsOnly(window) : window);
   }
   return windows;
 }

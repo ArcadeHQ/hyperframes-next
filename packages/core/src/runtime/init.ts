@@ -648,34 +648,25 @@ export function initSandboxRuntimeModular(): void {
     }
   };
 
+  const runtimeStartResolver = (opts?: { includeAuthoredTimingAttrs?: boolean }) =>
+    createRuntimeStartTimeResolver({
+      timelineRegistry: (window.__timelines ?? {}) as Record<
+        string,
+        RuntimeTimelineLike | undefined
+      >,
+      includeAuthoredTimingAttrs: opts?.includeAuthoredTimingAttrs ?? true,
+    });
+
   const resolveStartForElement = (
     element: Element,
     fallback = 0,
     opts?: { includeAuthoredTimingAttrs?: boolean },
-  ): number => {
-    const resolver = createRuntimeStartTimeResolver({
-      timelineRegistry: (window.__timelines ?? {}) as Record<
-        string,
-        RuntimeTimelineLike | undefined
-      >,
-      includeAuthoredTimingAttrs: opts?.includeAuthoredTimingAttrs ?? true,
-    });
-    return resolver.resolveStartForElement(element, fallback);
-  };
+  ): number => runtimeStartResolver(opts).resolveStartForElement(element, fallback);
 
   const resolveDurationForElement = (
     element: Element,
     opts?: { includeAuthoredTimingAttrs?: boolean },
-  ): number | null => {
-    const resolver = createRuntimeStartTimeResolver({
-      timelineRegistry: (window.__timelines ?? {}) as Record<
-        string,
-        RuntimeTimelineLike | undefined
-      >,
-      includeAuthoredTimingAttrs: opts?.includeAuthoredTimingAttrs ?? true,
-    });
-    return resolver.resolveDurationForElement(element);
-  };
+  ): number | null => runtimeStartResolver(opts).resolveDurationForElement(element);
 
   const resolveMediaCompositionContext = (element: Element) => {
     const compositionRoot = element.closest("[data-composition-id]");
@@ -706,11 +697,17 @@ export function initSandboxRuntimeModular(): void {
     });
   };
 
-  /** A nested slot's window for this element, with host starts resolved by the runtime resolver. */
-  const mapNestedMedia = (element: HTMLMediaElement): MappedMedia | null =>
-    mapNestedMediaElement(element, (host) =>
-      host instanceof Element ? resolveStartForElement(host, 0) : 0,
+  /**
+   * A nested slot's window for this element. Host starts come from the runtime
+   * resolver in their parent composition's seconds — the module composes the
+   * chain itself, so an absolute start would be offset twice.
+   */
+  const mapNestedMedia = (element: HTMLMediaElement): MappedMedia | null => {
+    const resolver = runtimeStartResolver();
+    return mapNestedMediaElement(element, (host) =>
+      host instanceof Element ? resolver.resolveLocalStartForElement(host) : 0,
     );
+  };
 
   const resolveAbsoluteMediaStartSeconds = (element: Element): number => {
     if (element instanceof HTMLMediaElement) {

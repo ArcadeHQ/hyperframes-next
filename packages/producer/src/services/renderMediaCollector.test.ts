@@ -103,6 +103,26 @@ describe("collectRenderMedia nested in-point", () => {
     });
   });
 
+  it("composes a host inside a host with each start in its parent's seconds", () => {
+    // Pinned to the runtime's "two-level" case in init.test.ts: both sides must
+    // land the clip at [6, 10].
+    const html = `<div data-composition-id="root" data-start="0">
+  <div data-composition-id="outer" data-composition-file="outer.html"
+       data-start="5" data-end="20" data-playback-start="1">
+    <div data-composition-id="inner" data-composition-file="inner.html"
+         data-start="2" data-end="10">
+      <video id="clip" data-hf-render-id="clip" src="clip.mp4" data-start="0" data-end="4"></video>
+    </div>
+  </div>
+</div>`;
+    const media = collectRenderMedia(html);
+    expect(media.videos.find((v) => v.id === "clip")).toMatchObject({
+      start: 6,
+      origin: 6,
+      end: 10,
+    });
+  });
+
   it("composes host playback-rate onto nested media", () => {
     const html = `<div data-composition-id="root" data-start="0">
   <div data-composition-id="scene" data-composition-file="scene.html"

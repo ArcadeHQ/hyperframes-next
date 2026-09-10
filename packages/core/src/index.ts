@@ -159,6 +159,7 @@ export {
 } from "./compiler/mediaRenderIds";
 export {
   IDENTITY_HOST_WINDOW,
+  boundsOnly,
   mapClipThroughHostWindow,
   resolveNestedHostWindow,
   sourceTimeAt,

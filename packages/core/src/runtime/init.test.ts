@@ -1473,6 +1473,46 @@ describe("initSandboxRuntimeModular", () => {
     expect(video.style.visibility).toBe("hidden");
   });
 
+  it("composes a host inside a host with each start in its parent's seconds", () => {
+    // Pinned to the collector's "two-level" case in renderMediaCollector.test.ts:
+    // outer slot at 5 with in-point 1, inner slot at 2 inside it → the clip lands
+    // at 5 − 1 + 2 = 6, not at the inner host's absolute start twice-offset (11).
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-root", "true");
+    root.setAttribute("data-duration", "30");
+    document.body.appendChild(root);
+
+    const outer = document.createElement("div");
+    outer.setAttribute("data-composition-id", "outer");
+    outer.setAttribute("data-composition-file", "outer.html");
+    outer.setAttribute("data-start", "5");
+    outer.setAttribute("data-end", "20");
+    outer.setAttribute("data-playback-start", "1");
+    root.appendChild(outer);
+
+    const inner = document.createElement("div");
+    inner.setAttribute("data-composition-id", "inner");
+    inner.setAttribute("data-composition-file", "inner.html");
+    inner.setAttribute("data-start", "2");
+    inner.setAttribute("data-end", "10");
+    outer.appendChild(inner);
+
+    const video = document.createElement("video");
+    video.setAttribute("data-start", "0");
+    video.setAttribute("data-end", "4");
+    inner.appendChild(video);
+
+    window.__timelines = {
+      main: createMockTimeline(30),
+      outer: createMockTimeline(15),
+      inner: createMockTimeline(8),
+    };
+    initSandboxRuntimeModular();
+
+    expect(window.__hfResolveMappedMedia?.(video)).toMatchObject({ start: 6, origin: 6, end: 10 });
+  });
+
   it("seeks nested media with a composed host playback-rate", () => {
     const root = document.createElement("div");
     root.setAttribute("data-composition-id", "main");

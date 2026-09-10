@@ -27,7 +27,11 @@ export type AttrNode = {
   parentElement: AttrNode | null;
 };
 
-/** A host's `data-start` in its parent's seconds — numeric or an id-ref to a sibling. */
+/**
+ * A host's `data-start` in its parent composition's own seconds — numeric or an
+ * id-ref to a sibling — never an absolute root time. The window composes the
+ * host chain itself; an absolute value would be offset twice.
+ */
 export type HostStartResolver = (host: AttrNode) => number;
 
 export type NestedHostWindow = {
@@ -48,6 +52,11 @@ export const IDENTITY_HOST_WINDOW: NestedHostWindow = {
   windowStart: 0,
   remaps: false,
 };
+
+/** The same slot bounds with no shift: for media that keeps its authored root time. */
+export function boundsOnly(window: NestedHostWindow): NestedHostWindow {
+  return { ...IDENTITY_HOST_WINDOW, limit: window.limit, windowStart: window.windowStart };
+}
 
 /**
  * A clip window on the master timeline. `start`/`end` are the visible slot,
