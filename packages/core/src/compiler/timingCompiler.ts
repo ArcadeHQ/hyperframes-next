@@ -26,6 +26,7 @@ import {
   readMediaStart,
 } from "../runtime/playbackRate.js";
 import type { RateSpec } from "../speedRamp.js";
+import { MEDIA_RENDER_ID_ATTR } from "./mediaRenderIds.js";
 // ── Types ────────────────────────────────────────────────────────────────
 
 export interface UnresolvedElement {
@@ -335,6 +336,32 @@ export function extractResolvedMedia(html: string): ResolvedMediaElement[] {
   }
 
   return resolved;
+}
+
+export type VideoSlotEnd = {
+  id: string;
+  end: number;
+  duration: number;
+};
+
+/**
+ * Stretch a compiled video's `data-end` / `data-duration` to an out-point
+ * past the source file (opacity hold). Leaves `data-start` / `data-media-start`.
+ */
+export function extendVideoSlotEnds(html: string, slots: readonly VideoSlotEnd[]): string {
+  if (slots.length === 0) return html;
+  const byId = new Map(slots.map((slot) => [slot.id, slot]));
+  return replaceOpeningTags(html, ["video"], (tag) => {
+    const id = getAttr(tag, MEDIA_RENDER_ID_ATTR) ?? getAttr(tag, "id");
+    if (!id) return tag;
+    const slot = byId.get(id);
+    if (!slot || !Number.isFinite(slot.end) || !(slot.duration > 0)) return tag;
+    return setAttr(
+      setAttr(tag, "data-end", String(slot.end)),
+      "data-duration",
+      String(slot.duration),
+    );
+  });
 }
 
 /**
