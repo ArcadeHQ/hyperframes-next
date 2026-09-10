@@ -149,9 +149,11 @@ export {
   injectDurations,
   extractResolvedMedia,
   clampDurations,
+  extendVideoSlotEnds,
   shouldClampMediaDuration,
   shouldClampResolvedMediaDuration,
   MEDIA_DURATION_CLAMP_EPSILON_SECONDS,
+  type VideoSlotEnd,
 } from "./compiler/timingCompiler";
 
 export {
