@@ -42,7 +42,7 @@ import {
   isTransientBrowserError,
   probeBeginFrameLiveness,
 } from "@hyperframes/engine";
-import { fpsToNumber } from "@hyperframes/core";
+import { fpsToNumber, MEDIA_RENDER_ID_ATTR } from "@hyperframes/core";
 import type { CompiledComposition } from "../../htmlCompiler.js";
 import {
   discoverMediaFromBrowser,
@@ -153,6 +153,64 @@ export function hasScriptedAudioVolumeAutomation(html: string, audioCount: numbe
 export function hasAutoStartVideos(html: string): boolean {
   const { document } = parseHTML(html);
   return document.querySelector("video[data-hf-auto-start]") !== null;
+}
+
+type VideoTimingStamp = {
+  id: string;
+  start: number;
+  end: number;
+  mediaStart: number;
+};
+
+function videoTagAttr(tag: string, attr: string): string | null {
+  const match = tag.match(new RegExp(`\\s${attr}=["']([^"']*)["']`));
+  return match?.[1] ?? null;
+}
+
+function setVideoTagAttr(tag: string, attr: string, value: string): string {
+  if (new RegExp(`\\s${attr}(?:\\s|=|>|/)`).test(tag)) {
+    return tag.replace(new RegExp(`(${attr}=["'])[^"']*(["'])`), `$1${value}$2`);
+  }
+  return tag.replace(/>$/, ` ${attr}="${value}">`);
+}
+
+/**
+ * Extend compiled `data-end` / `data-duration` to the opacity out-point.
+ * Leave `data-start` / `data-media-start` alone — extract already has the
+ * host clock. Rewriting start on an in-flow underlay blanks the scene.
+ */
+export function stampDiscoveredVideoTiming(
+  html: string,
+  stamps: readonly VideoTimingStamp[],
+): string {
+  if (stamps.length === 0) return html;
+  const byId = new Map(stamps.map((stamp) => [stamp.id, stamp]));
+  return html.replace(/<video\b[^>]*>/gi, (tag) => {
+    const id = videoTagAttr(tag, MEDIA_RENDER_ID_ATTR) ?? videoTagAttr(tag, "id");
+    if (!id) return tag;
+    const stamp = byId.get(id);
+    if (!stamp || !Number.isFinite(stamp.end) || stamp.end <= stamp.start) return tag;
+    const authoredStart = Number.parseFloat(videoTagAttr(tag, "data-start") ?? "");
+    const slotStart = Number.isFinite(authoredStart) ? authoredStart : stamp.start;
+    const duration = stamp.end - slotStart;
+    if (!(duration > 0)) return tag;
+    return setVideoTagAttr(
+      setVideoTagAttr(tag, "data-end", String(stamp.end)),
+      "data-duration",
+      String(duration),
+    );
+  });
+}
+
+function stampDiscoveredVideoTimingOnCompiled(
+  compiled: CompiledComposition,
+  stamps: readonly VideoTimingStamp[],
+): void {
+  if (stamps.length === 0) return;
+  compiled.html = stampDiscoveredVideoTiming(compiled.html, stamps);
+  for (const [path, html] of compiled.subCompositions) {
+    compiled.subCompositions.set(path, stampDiscoveredVideoTiming(html, stamps));
+  }
 }
 
 /** Videos whose file was in the HTML at compile time — the player already ran the host clock. */
@@ -667,6 +725,7 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
       assertNotAborted();
 
       const hostClockIds = staticSrcVideoIds(compiled.html);
+      const timingStamps: VideoTimingStamp[] = [];
       for (const win of visibilityWindows) {
         const video = composition.videos.find((v) => v.id === win.videoId);
         if (!video) continue;
@@ -679,10 +738,34 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
           if (raised > 0 && video.mediaStart <= 0 && hostClockIds.has(video.id)) {
             video.mediaStart += raised;
           }
+          timingStamps.push({
+            id: video.id,
+            start: video.start,
+            end: video.end,
+            mediaStart: video.mediaStart,
+          });
           log.info(
             `[Probe] Runtime video discovery: ${video.id} visible ${win.visibleStart.toFixed(2)}s–${win.visibleEnd.toFixed(2)}s → ${video.start.toFixed(2)}s–${video.end.toFixed(2)}s`,
           );
         }
+      }
+      if (timingStamps.length > 0) {
+        stampDiscoveredVideoTimingOnCompiled(compiled, timingStamps);
+        writeCompiledArtifacts(compiled, workDir, Boolean(job.config.debug));
+        await session.page.evaluate((rows: VideoTimingStamp[]) => {
+          for (const row of rows) {
+            const el = ((
+              window as unknown as { __hfMediaEl?: (id: string) => Element | null }
+            ).__hfMediaEl?.(row.id) ?? document.getElementById(row.id)) as HTMLVideoElement | null;
+            if (!el) continue;
+            const authoredStart = Number.parseFloat(el.getAttribute("data-start") ?? "");
+            const slotStart = Number.isFinite(authoredStart) ? authoredStart : row.start;
+            const duration = row.end - slotStart;
+            if (!(duration > 0)) continue;
+            el.setAttribute("data-end", String(row.end));
+            el.setAttribute("data-duration", String(duration));
+          }
+        }, timingStamps);
       }
     }
   }

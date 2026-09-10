@@ -293,6 +293,20 @@ function makeProbeInput(overrides: {
   };
 }
 
+describe("stampDiscoveredVideoTiming", () => {
+  it("replaces a file-bounded data-duration so capture can hold past source EOF", async () => {
+    const { stampDiscoveredVideoTiming } = await import("./probeStage.js");
+    const html = stampDiscoveredVideoTiming(
+      `<video id="wrap" src="wrap.mp4" data-start="13" data-end="18.2" data-duration="5.2" data-hf-auto-start=""></video>`,
+      [{ id: "wrap", start: 17, end: 19, mediaStart: 4 }],
+    );
+    expect(html).toContain('data-start="13"');
+    expect(html).toContain('data-end="19"');
+    expect(html).toContain('data-duration="6"');
+    expect(html).not.toContain("data-media-start");
+  });
+});
+
 describe("hasScriptedAudioVolumeAutomation", () => {
   it("ignores non-script volume text", () => {
     expect(
@@ -575,7 +589,7 @@ describe("runProbeStage — forceScreenshot threading", () => {
       loop: false,
       hasAudio: false,
     });
-    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-start="2" data-end="4" data-duration="2" data-hf-auto-start=""></video>`;
 
     await runProbeStage(input);
 
@@ -587,6 +601,9 @@ describe("runProbeStage — forceScreenshot threading", () => {
         mediaStart: 1.5,
       }),
     );
+    expect(input.compiled.html).toContain('data-start="2"');
+    expect(input.compiled.html).toContain('data-end="6"');
+    expect(input.compiled.html).toContain('data-duration="4"');
   });
 
   it("does not let visibility pull start earlier than the host-mapped start", async () => {
