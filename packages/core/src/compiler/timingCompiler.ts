@@ -24,6 +24,7 @@ import {
   readElementPlaybackRate,
   readMediaStart,
 } from "../runtime/playbackRate.js";
+import { MEDIA_RENDER_ID_ATTR } from "./mediaRenderIds.js";
 // ── Types ────────────────────────────────────────────────────────────────
 
 export interface UnresolvedElement {
@@ -328,6 +329,34 @@ export function extractResolvedMedia(html: string): ResolvedMediaElement[] {
  * For each resolution, replaces the declared duration with the clamped value
  * and recomputes data-end accordingly.
  */
+export type VideoSlotEnd = {
+  id: string;
+  end: number;
+  duration: number;
+};
+
+/**
+ * Stretch a compiled video's `data-end` / `data-duration` to an out-point
+ * past the source file (opacity hold). Leaves `data-start` / `data-media-start`.
+ */
+export function extendVideoSlotEnds(html: string, slots: readonly VideoSlotEnd[]): string {
+  if (slots.length === 0) return html;
+  const { masked, restore } = maskInertRegions(html);
+  const byId = new Map(slots.map((slot) => [slot.id, slot]));
+  const next = masked.replace(/<video\b[^>]*>/gi, (tag) => {
+    const id = getAttr(tag, MEDIA_RENDER_ID_ATTR) ?? getAttr(tag, "id");
+    if (!id) return tag;
+    const slot = byId.get(id);
+    if (!slot || !Number.isFinite(slot.end) || !(slot.duration > 0)) return tag;
+    return setAttr(
+      setAttr(tag, "data-end", String(slot.end)),
+      "data-duration",
+      String(slot.duration),
+    );
+  });
+  return restore(next);
+}
+
 export function clampDurations(html: string, clamps: ResolvedDuration[]): string {
   for (const { id, duration } of clamps) {
     const idPattern = new RegExp(`(<[^>]*id=["']${escapeRegex(id)}["'][^>]*>)`, "gi");

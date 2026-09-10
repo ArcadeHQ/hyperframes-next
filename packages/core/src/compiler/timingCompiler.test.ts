@@ -6,6 +6,7 @@ import {
   injectDurations,
   extractResolvedMedia,
   clampDurations,
+  extendVideoSlotEnds,
   shouldClampResolvedMediaDuration,
 } from "./timingCompiler.js";
 
@@ -290,6 +291,28 @@ describe("extractResolvedMedia", () => {
     const html = '<video id="v1" src="a.mp4" data-start="0" data-duration="NaN">';
     const resolved = extractResolvedMedia(html);
     expect(resolved).toHaveLength(0);
+  });
+});
+
+describe("extendVideoSlotEnds", () => {
+  it("keeps data-start and stretches a file-bounded data-duration past source EOF", () => {
+    const html = extendVideoSlotEnds(
+      `<video id="wrap" src="wrap.mp4" data-start="13" data-end="18.2" data-duration="5.2" data-hf-auto-start=""></video>`,
+      [{ id: "wrap", end: 19, duration: 6 }],
+    );
+    expect(html).toContain('data-start="13"');
+    expect(html).toContain('data-end="19"');
+    expect(html).toContain('data-duration="6"');
+    expect(html).not.toContain("data-media-start");
+  });
+
+  it("does not rewrite a video mentioned only in a comment", () => {
+    const html = extendVideoSlotEnds(
+      `<!-- <video id="wrap" data-duration="5.2" data-end="18.2"> --><video id="wrap" data-start="13" data-end="18.2" data-duration="5.2"></video>`,
+      [{ id: "wrap", end: 19, duration: 6 }],
+    );
+    expect(html).toContain(`<!-- <video id="wrap" data-duration="5.2" data-end="18.2"> -->`);
+    expect(html).toContain('data-duration="6"');
   });
 });
 
