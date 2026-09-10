@@ -16,12 +16,14 @@ export {
   injectDurations,
   extractResolvedMedia,
   clampDurations,
+  extendVideoSlotEnds,
   shouldClampMediaDuration,
   shouldClampResolvedMediaDuration,
   type UnresolvedElement,
   type ResolvedDuration,
   type ResolvedMediaElement,
   type CompilationResult,
+  type VideoSlotEnd,
 } from "./timingCompiler";
 
 // HTML compiler (Node.js — requires fs)
