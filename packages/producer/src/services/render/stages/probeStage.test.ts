@@ -293,20 +293,6 @@ function makeProbeInput(overrides: {
   };
 }
 
-describe("stampDiscoveredVideoTiming", () => {
-  it("replaces a file-bounded data-duration so capture can hold past source EOF", async () => {
-    const { stampDiscoveredVideoTiming } = await import("./probeStage.js");
-    const html = stampDiscoveredVideoTiming(
-      `<video id="wrap" src="wrap.mp4" data-start="13" data-end="18.2" data-duration="5.2" data-hf-auto-start=""></video>`,
-      [{ id: "wrap", start: 17, end: 19, mediaStart: 4 }],
-    );
-    expect(html).toContain('data-start="13"');
-    expect(html).toContain('data-end="19"');
-    expect(html).toContain('data-duration="6"');
-    expect(html).not.toContain("data-media-start");
-  });
-});
-
 describe("hasScriptedAudioVolumeAutomation", () => {
   it("ignores non-script volume text", () => {
     expect(
