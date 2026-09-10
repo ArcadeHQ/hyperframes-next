@@ -794,8 +794,12 @@ export async function injectVideoFramesBatch(
           img.style.top = `${offsetTop}px`;
           img.style.right = "auto";
           img.style.bottom = "auto";
-          img.style.width = `${offsetWidth}px`;
-          img.style.height = `${offsetHeight}px`;
+          // display:none (runtime hid a file-bounded leaf) reports a 0 box.
+          // Keep the last painted overlay size so a short clip can hold.
+          if (offsetWidth > 0 && offsetHeight > 0) {
+            img.style.width = `${offsetWidth}px`;
+            img.style.height = `${offsetHeight}px`;
+          }
         }
         img.style.objectFit = computedStyle.objectFit;
         img.style.objectPosition = computedStyle.objectPosition;
