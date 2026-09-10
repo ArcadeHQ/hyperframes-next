@@ -155,6 +155,22 @@ export function hasAutoStartVideos(html: string): boolean {
   return document.querySelector("video[data-hf-auto-start]") !== null;
 }
 
+/** Videos whose file was in the HTML at compile time — the player already ran the host clock. */
+function staticSrcVideoIds(html: string): Set<string> {
+  const { document } = parseHTML(html);
+  const ids = new Set<string>();
+  for (const el of document.querySelectorAll("video")) {
+    const ownSrc = el.getAttribute("src")?.trim();
+    const childSrc = [...el.querySelectorAll("source")].some((source) =>
+      Boolean(source.getAttribute("src")?.trim()),
+    );
+    if (!ownSrc && !childSrc) continue;
+    const id = el.getAttribute("data-hf-render-id") || el.id;
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
 /**
  * Variable-bound image/audio/video sources are resolved by the browser runtime, not
  * the static compiler. Probe them whenever the current render overrides the
@@ -650,14 +666,21 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
       );
       assertNotAborted();
 
+      const hostClockIds = staticSrcVideoIds(compiled.html);
       for (const win of visibilityWindows) {
         const video = composition.videos.find((v) => v.id === win.videoId);
         if (!video) continue;
         if (win.visibleStart >= 0 && win.visibleEnd > win.visibleStart) {
-          video.start = win.visibleStart;
+          const prevStart = video.start;
+          // Host-window maps origin; never pull start earlier than that floor.
+          video.start = Math.max(video.start, win.visibleStart);
           video.end = win.visibleEnd;
+          const raised = video.start - prevStart;
+          if (raised > 0 && video.mediaStart <= 0 && hostClockIds.has(video.id)) {
+            video.mediaStart += raised;
+          }
           log.info(
-            `[Probe] Runtime video discovery: ${video.id} visible ${win.visibleStart.toFixed(2)}s–${win.visibleEnd.toFixed(2)}s`,
+            `[Probe] Runtime video discovery: ${video.id} visible ${win.visibleStart.toFixed(2)}s–${win.visibleEnd.toFixed(2)}s → ${video.start.toFixed(2)}s–${video.end.toFixed(2)}s`,
           );
         }
       }
