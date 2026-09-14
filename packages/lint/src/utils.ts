@@ -69,12 +69,37 @@ export function parseHtmlStructure(source: string): {
     contentStart: number;
     index: number;
   }> = [];
+  let explicitOpenTag: { index: number; nameEnd: number } | null = null;
   const parser: Parser = new Parser(
     {
-      onopentag(name) {
-        const index = parser.startIndex;
+      onopentagname(name) {
+        // startIndex can still point into the preceding close. Bound this scan by
+        // HTML name delimiters, not '<' (which can occur in a malformed name).
+        // Keep the raw name end too: Unicode lowercasing can change UTF-16 length.
+        let tokenStart = parser.endIndex - 1;
+        while (
+          tokenStart >= parser.startIndex &&
+          !/[\t\n\f\r />]/.test(source.charAt(tokenStart))
+        ) {
+          tokenStart -= 1;
+        }
+        const index = source.indexOf("<", tokenStart + 1);
+        explicitOpenTag =
+          index >= 0 &&
+          index < parser.endIndex &&
+          source.slice(index + 1, parser.endIndex).toLowerCase() === name
+            ? { index, nameEnd: parser.endIndex }
+            : null;
+      },
+      onopentag(name, _attrs, isImplied) {
+        const origin = !isImplied ? explicitOpenTag : null;
+        const index = origin?.index ?? parser.startIndex;
+        explicitOpenTag = null;
         const raw = source.slice(index, parser.endIndex + 1);
-        const attrs = raw.slice(name.length + 1, -1).replace(/\s*\/$/, "");
+        const rawAttrs = origin
+          ? source.slice(origin.nameEnd, parser.endIndex)
+          : raw.slice(name.length + 1, -1);
+        const attrs = rawAttrs.replace(/\s*\/$/, "");
         const tag = { raw, name, attrs, index };
         tags.push(tag);
         const sameNameStack = openTagsByName.get(name) ?? [];

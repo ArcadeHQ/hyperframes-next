@@ -962,6 +962,30 @@ describe("core rules", () => {
       ).toBeUndefined();
     });
 
+    it.each([
+      ["adjacent", `<span>A</span><span>B</span>`],
+      ["spaces", `<span>A</span   ><span>B</span>`],
+      ["newline", `<span>A</span\n    ><span>B</span>`],
+    ])(
+      "does not flag valid sibling spans when the closing tag uses %s whitespace",
+      async (_label, body) => {
+        const result = await lintHyperframeHtml(compositionWithBodyPrefix(body));
+        expect(
+          result.findings.find((f) => f.code === "unclosed_tag_swallowed_element"),
+        ).toBeUndefined();
+      },
+    );
+
+    it.each([`<span class="first" <span>B</span>`, `<span data-label=first <strong>B</strong>`])(
+      "still flags a malformed span start tag that swallows its next element",
+      async (body) => {
+        const result = await lintHyperframeHtml(compositionWithBodyPrefix(body));
+        const finding = result.findings.find((f) => f.code === "unclosed_tag_swallowed_element");
+        expect(finding?.severity).toBe("error");
+        expect(finding?.snippet).toContain("<span");
+      },
+    );
+
     it("does not flag a legitimate attribute value containing a raw <", async () => {
       const html = compositionWithBodyPrefix(`<div data-expr="x < y">hi</div>`);
       const result = await lintHyperframeHtml(html);
