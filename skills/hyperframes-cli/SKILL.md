@@ -62,7 +62,7 @@ Do not confuse these states:
 | Storyboard board          | Before composition checks, only when `storyboard: yes` | Review plan cards and wireframe sketches. Open `?view=storyboard#project/<name>`. |
 | Final composition preview | After `check` passes                                   | Review the assembled timeline before render. Open `#project/<name>`.              |
 
-The early board is not approval of the final video. Rendering always requires the final approval defined by `hyperframes-core/references/review-loop.md`.
+The early board is not approval of the final video. Rendering always requires the final approval defined by `hyperframes/references/review-loop.md`.
 
 ## Sub-composition smoke test
 

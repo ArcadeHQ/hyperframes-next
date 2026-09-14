@@ -2,11 +2,11 @@
   "source": "heygen-com/hyperframes",
   "skills": {
     "embedded-captions": {
-      "hash": "57a5caaa35ff79c8",
+      "hash": "4023b0b051ba1e75",
       "files": 142
     },
     "faceless-explainer": {
-      "hash": "3f84e9cf9c2468ca",
+      "hash": "7ff529b85f588ffc",
       "files": 24
     },
     "figma": {
@@ -14,12 +14,12 @@
       "files": 2
     },
     "general-video": {
-      "hash": "a7e50541d5f01d98",
+      "hash": "ab15530f09bec21c",
       "files": 4
     },
     "hyperframes": {
-      "hash": "e77a36c488b4f80c",
-      "files": 17
+      "hash": "d0a114a8f894758e",
+      "files": 26
     },
     "hyperframes-animation": {
       "hash": "3947516ec450f3aa",
@@ -30,15 +30,15 @@
       "files": 7
     },
     "hyperframes-cli": {
-      "hash": "06b31056db460774",
+      "hash": "f1593f498b988a0c",
       "files": 11
     },
     "hyperframes-core": {
-      "hash": "e15156c04011c4eb",
-      "files": 20
+      "hash": "d9c1fae7818d5ba8",
+      "files": 11
     },
     "hyperframes-creative": {
-      "hash": "f3b201ca29eae92a",
+      "hash": "7b6b7a78102da71b",
       "files": 78
     },
     "hyperframes-keyframes": {
@@ -50,23 +50,23 @@
       "files": 12
     },
     "media-use": {
-      "hash": "28948e640a5d133a",
+      "hash": "08a544dfaca9e846",
       "files": 158
     },
     "motion-graphics": {
-      "hash": "de8ec5464028ec67",
+      "hash": "32641ae2b94c4a8f",
       "files": 23
     },
     "music-to-video": {
-      "hash": "be70b499dd72169b",
+      "hash": "82039f8aa152a904",
       "files": 132
     },
     "pr-to-video": {
-      "hash": "b93575a96d213ff5",
+      "hash": "bbb3db51176b7e44",
       "files": 30
     },
     "product-launch-video": {
-      "hash": "b1597ed153cafcc7",
+      "hash": "d87f7ae140e88403",
       "files": 30
     },
     "remotion-to-hyperframes": {
@@ -74,11 +74,11 @@
       "files": 70
     },
     "slideshow": {
-      "hash": "3d03ada897faebd2",
+      "hash": "71174bff2d869f18",
       "files": 2
     },
     "talking-head-recut": {
-      "hash": "50d1f9c928514826",
+      "hash": "7018bf017e8606d2",
       "files": 28
     }
   }
