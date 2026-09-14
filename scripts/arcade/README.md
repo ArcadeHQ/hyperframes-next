@@ -8,7 +8,7 @@ Public fork of Heygen Hyperframes with Arcade keep-local / pending-contrib patch
 | ---------------------- | ------------------------------------------------------------------------------------ |
 | `main`                 | Upstream mirror only — no Arcade commits                                             |
 | `patch/<slug>`         | One patch; open upstream PRs from these                                              |
-| `arcade`               | Disposable integration: `base` (`main` / v0.8.21) + cherry-picks from `patches.json` |
+| `arcade`               | Disposable integration: `base` (`main`) + cherry-picks from `patches.json`           |
 | `patch/arcade-tooling` | This tooling (first entry in the manifest; never upstreamed)                         |
 
 ## Rebuild `arcade`
@@ -22,6 +22,21 @@ node scripts/arcade/rebuild.mjs --yes --push                # force-with-lease o
 ```
 
 Conflict → abort names the patch. Rebase that `patch/*` onto the same `base`, then re-run.
+
+## Tags
+
+Version the delta against `main`, not a merge of `main` into the patch. After a rebuild, tag this date (`YYYY-MM-DD`):
+
+- `sync/<date>/base` → `main`
+- `sync/<date>/<patch>` → each `patch/*` tip (`playback-start-nested`, not `patch/playback-start-nested`)
+- `sync/<date>/arcade` → `arcade`
+
+```
+git range-diff sync/2026-09-09/base..sync/2026-09-09/playback-start-nested \
+  sync/<date>/base..sync/<date>/playback-start-nested
+```
+
+Push `refs/tags/sync/<date>/*`. If `.tmp` is mid-rebase, tag last week's tips from a clean sibling checkout (`../hyperframes-next`), not from a dirty worktree.
 
 When an upstream PR merges, delete its row from `patches.json` (and optionally the branch).
 
