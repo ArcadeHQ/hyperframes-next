@@ -15,14 +15,11 @@ export const examples: Example[] = [
   ["Scaffold a portrait video", "hyperframes init my-video --resolution portrait"],
   ["Start from an existing video file", "hyperframes init my-video --video clip.mp4"],
   ["Start from an audio file", "hyperframes init my-video --audio track.mp3"],
-  ["Scaffold with Tailwind CSS", "hyperframes init my-video --example blank --tailwind"],
-  [
-    "Non-interactive mode (for CI or AI agents)",
-    "hyperframes init my-video --example blank --non-interactive",
-  ],
+  ["Scaffold with Tailwind CSS", "hyperframes init my-video --tailwind"],
+  ["Non-interactive mode (for CI or AI agents)", "hyperframes init my-video --non-interactive"],
   [
     "Opt out of the GitHub skills check (CI/tests only)",
-    "HYPERFRAMES_SKIP_SKILLS=1 hyperframes init my-video --example blank --non-interactive",
+    "HYPERFRAMES_SKIP_SKILLS=1 hyperframes init my-video --non-interactive",
   ],
 ];
 import {
@@ -56,6 +53,13 @@ import {
   normalizeResolutionFlag,
   type CanvasResolution,
 } from "@hyperframes/core";
+
+function resolveScaffoldTemplateId(exampleFlag: string | undefined, hasMediaFile: boolean): string {
+  const example = exampleFlag === "agent" ? "blank" : exampleFlag;
+  if (example && example !== "blank") return example;
+  if (hasMediaFile) return "from-file";
+  return "blank";
+}
 
 interface VideoMeta {
   durationSeconds: number;
@@ -722,6 +726,11 @@ export default defineCommand({
       type: "boolean",
       description: "Disable interactive prompts (for CI/agents)",
     },
+    agent: {
+      type: "boolean",
+      hidden: true,
+      description: "Deprecated alias; default init is the centered blank",
+    },
     "skip-skills": {
       type: "boolean",
       description:
@@ -783,7 +792,7 @@ export default defineCommand({
     const skipSkills = process.env.HYPERFRAMES_SKIP_SKILLS === "1";
     const skipSkillsFlagIgnored = args["skip-skills"] === true && !skipSkills;
     const tailwind = args.tailwind === true;
-    const nonInteractive = args["non-interactive"] === true;
+    const nonInteractive = args["non-interactive"] === true || args.agent === true;
     const modelFlag = args.model;
     const languageFlag = args.language;
     const initialTranscriptionModel = initialModelForLanguage(
@@ -820,17 +829,7 @@ export default defineCommand({
     // Non-interactive mode — all inputs from flags, defaults where missing
     // -----------------------------------------------------------------------
     if (!interactive) {
-      if (!exampleFlag && !videoFlag && !audioFlag) {
-        console.error(
-          c.error(
-            "Non-interactive init requires --example, --video, or --audio. " +
-              "For an empty starter project, pass --example blank explicitly.",
-          ),
-        );
-        failCommand();
-      }
-
-      const templateId = exampleFlag ?? "blank";
+      const templateId = resolveScaffoldTemplateId(exampleFlag, Boolean(videoFlag || audioFlag));
       const name = args.name ?? "my-video";
       const destDir = resolve(name);
 
@@ -1091,8 +1090,8 @@ export default defineCommand({
     // 3. Pick example — skip prompt if --example was provided
     let templateId: string;
 
-    if (exampleFlag) {
-      templateId = exampleFlag;
+    if (exampleFlag || videoFlag || audioFlag) {
+      templateId = resolveScaffoldTemplateId(exampleFlag, Boolean(videoFlag || audioFlag));
     } else {
       // Resolve full template list (bundled + remote)
       const allTemplates = await resolveTemplateList();

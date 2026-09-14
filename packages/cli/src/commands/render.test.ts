@@ -429,11 +429,51 @@ describe("renderLocal browser GPU config", () => {
       quiet: true,
     });
 
-    expect(producerState.resolveConfigCalls).toContainEqual({ browserGpuMode: "auto" });
+    expect(producerState.resolveConfigCalls).toContainEqual({
+      browserGpuMode: "auto",
+      forceScreenshot: false,
+    });
     expect(producerState.createdJobs[0]?.producerConfig).toMatchObject({
       browserGpuMode: "auto",
       resolved: true,
     });
+  });
+
+  it("honors PRODUCER_FORCE_SCREENSHOT=true even on local auto GPU", async () => {
+    const prev = process.env.PRODUCER_FORCE_SCREENSHOT;
+    process.env.PRODUCER_FORCE_SCREENSHOT = "true";
+    try {
+      await renderLocal("/tmp/project", "/tmp/out.mp4", {
+        fps: { num: 30, den: 1 },
+        quality: "standard",
+        format: "mp4",
+        gpu: false,
+        browserGpuMode: "auto",
+        hdrMode: "auto",
+        quiet: true,
+      });
+      expect(producerState.resolveConfigCalls).toContainEqual({ browserGpuMode: "auto" });
+      expect(producerState.resolveConfigCalls[0]).not.toHaveProperty("forceScreenshot");
+    } finally {
+      if (prev === undefined) delete process.env.PRODUCER_FORCE_SCREENSHOT;
+      else process.env.PRODUCER_FORCE_SCREENSHOT = prev;
+    }
+  });
+
+  it("keeps the screenshot clamp when --resolution supersamples", async () => {
+    await renderLocal("/tmp/project", "/tmp/out.mp4", {
+      fps: { num: 30, den: 1 },
+      quality: "standard",
+      format: "mp4",
+      gpu: false,
+      browserGpuMode: "auto",
+      hdrMode: "auto",
+      quiet: true,
+      outputResolution: "landscape",
+    });
+
+    expect(producerState.resolveConfigCalls).toContainEqual({ browserGpuMode: "auto" });
+    expect(producerState.resolveConfigCalls[0]).not.toHaveProperty("forceScreenshot");
   });
 
   it("passes an explicit hardware override for default local browser GPU", async () => {

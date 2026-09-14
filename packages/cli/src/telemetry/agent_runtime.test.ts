@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { HINT_KEY_PATTERN } from "./agent_runtime.js";
 
 // agent_runtime.ts reads node:os via release/platform and node:fs for the
 // /proc files. detectAgentRuntime is exercised by mutating process.env;
@@ -27,6 +28,10 @@ const VENDOR_ENV_KEYS = [
 
 function stripVendorEnv(): void {
   for (const key of VENDOR_ENV_KEYS) delete process.env[key];
+  // Ambient session keys would otherwise fill the 16-key hint cap.
+  for (const key of Object.keys(process.env)) {
+    if (HINT_KEY_PATTERN.test(key.toUpperCase())) delete process.env[key];
+  }
 }
 
 describe("detectAgentRuntime — base behavior", () => {
@@ -390,6 +395,15 @@ describe("detectAgentHints — new-agent discovery signals", () => {
 
   it("surfaces an unknown agent-ish env KEY in agent_env_hints", async () => {
     process.env["FOO_AGENT_SESSION_ID"] = "whatever-value";
+    const { detectAgentHints } = await import("./agent_runtime.js");
+    expect(detectAgentHints().agent_env_hints).toContain("FOO_AGENT_SESSION_ID");
+  });
+
+  it("clears a full 16-key ambient cap so a fixture key still fits", async () => {
+    for (let i = 0; i < 16; i++) process.env[`AAA_AGENT_${String(i).padStart(2, "0")}`] = "1";
+    process.env["FOO_AGENT_SESSION_ID"] = "x";
+    stripVendorEnv();
+    process.env["FOO_AGENT_SESSION_ID"] = "x";
     const { detectAgentHints } = await import("./agent_runtime.js");
     expect(detectAgentHints().agent_env_hints).toContain("FOO_AGENT_SESSION_ID");
   });
