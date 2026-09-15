@@ -71,15 +71,16 @@ describe("collectRenderMedia nested in-point", () => {
   <video id="intro" data-hf-render-id="intro" src="intro.mp4"
          data-start="0" data-end="10" data-duration="10"></video>
   <div data-composition-id="scene" data-composition-file="scene.html"
-       data-start="intro" data-duration="2">
+       data-start="intro" data-duration="2" data-end="12">
     <video id="scene-video" data-hf-render-id="scene-video" src="clip.mp4"
            data-start="0" data-end="4" data-duration="4"></video>
   </div>
 </div>`;
     const media = collectRenderMedia(html);
+    // The id-ref resolves the host to 10; its explicit end closes the clip at 12.
     expect(media.videos.find((v) => v.id === "scene-video")).toMatchObject({
       start: 10,
-      end: 14,
+      end: 12,
     });
   });
 });
