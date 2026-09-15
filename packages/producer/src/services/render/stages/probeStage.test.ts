@@ -561,7 +561,8 @@ describe("runProbeStage — forceScreenshot threading", () => {
         id: "demo",
         src: "runtime.mp4",
         start: 2,
-        end: 0,
+        // Unknown end closes with the 2s host slot.
+        end: 4,
         mediaStart: 2,
       }),
     ]);

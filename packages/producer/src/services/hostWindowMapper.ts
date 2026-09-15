@@ -6,7 +6,7 @@
  * (playback-start-nested owns it).
  */
 import { parseHTML } from "linkedom";
-import { MEDIA_RENDER_ID_ATTR } from "@hyperframes/core";
+import { MEDIA_RENDER_ID_ATTR, resolveAuthoredTimingWindow } from "@hyperframes/core";
 import {
   resolveReferencedStart,
   type RefResolverEl,
@@ -15,18 +15,20 @@ import {
 
 const COMPOSITION_HOST_ATTR = "data-composition-file";
 
+/** Same rule as the collector: the runtime's authored timing window for the host. */
+const resolveHostEnd = (host: Element, hostStart: number): number | null =>
+  resolveAuthoredTimingWindow({
+    start: hostStart,
+    duration: host.getAttribute("data-duration"),
+    end: host.getAttribute("data-end"),
+  })?.end ?? null;
+
 interface HostWindow {
   offset: number;
   limit: number;
 }
 
 const ROOT_WINDOW: HostWindow = { offset: 0, limit: Infinity };
-
-const parseNumeric = (value: string | null): number | null => {
-  if (value == null || value === "") return null;
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : null;
-};
 
 const resolveHostWindow = (
   element: Element,
@@ -44,7 +46,7 @@ const resolveHostWindow = (
   let limit = Infinity;
   for (const host of hosts.reverse()) {
     const hostStart = resolveReferencedStart(document, host, startCache, visiting);
-    const hostEnd = parseNumeric(host.getAttribute("data-end"));
+    const hostEnd = resolveHostEnd(host, hostStart);
     if (hostEnd != null) limit = Math.min(limit, offset + hostEnd);
     offset += hostStart;
   }
