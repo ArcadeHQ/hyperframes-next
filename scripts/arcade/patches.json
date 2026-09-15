@@ -29,7 +29,8 @@
       "keepLocal": true
     },
     {
-      "branch": "patch/render-settle-pass"
+      "branch": "patch/render-settle-pass",
+      "keepLocal": true
     },
     {
       "branch": "patch/extract-hold-past-eof"
