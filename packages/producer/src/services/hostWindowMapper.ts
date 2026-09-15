@@ -15,6 +15,14 @@ import {
 
 const COMPOSITION_HOST_ATTR = "data-composition-file";
 
+/** Same rule as the collector: `data-end`, else start + `data-duration`. */
+const resolveHostEnd = (host: Element, hostStart: number): number | null => {
+  const end = parseNumeric(host.getAttribute("data-end"));
+  if (end != null) return end;
+  const duration = parseNumeric(host.getAttribute("data-duration"));
+  return duration == null ? null : hostStart + duration;
+};
+
 interface HostWindow {
   offset: number;
   limit: number;
@@ -44,7 +52,7 @@ const resolveHostWindow = (
   let limit = Infinity;
   for (const host of hosts.reverse()) {
     const hostStart = resolveReferencedStart(document, host, startCache, visiting);
-    const hostEnd = parseNumeric(host.getAttribute("data-end"));
+    const hostEnd = resolveHostEnd(host, hostStart);
     if (hostEnd != null) limit = Math.min(limit, offset + hostEnd);
     offset += hostStart;
   }
