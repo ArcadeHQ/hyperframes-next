@@ -30,6 +30,9 @@
     },
     {
       "branch": "patch/render-settle-pass"
+    },
+    {
+      "branch": "patch/extract-hold-past-eof"
     }
   ]
 }
