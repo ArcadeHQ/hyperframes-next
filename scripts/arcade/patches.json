@@ -33,7 +33,9 @@
       "keepLocal": true
     },
     {
-      "branch": "patch/extract-hold-past-eof"
+      "branch": "patch/extract-hold-past-eof",
+      "issue": "https://github.com/heygen-com/hyperframes/issues/3958",
+      "pr": "https://github.com/heygen-com/hyperframes/pull/3959"
     }
   ]
 }
