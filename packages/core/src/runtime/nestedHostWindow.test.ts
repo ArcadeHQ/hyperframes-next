@@ -46,6 +46,23 @@ describe("nestedHostWindow", () => {
     });
   });
 
+  it("bounds a host authored with data-duration but no data-end", () => {
+    const host = el({
+      "data-composition-file": "scene.html",
+      "data-start": "5",
+      "data-duration": "2",
+      "data-playback-start": "1.5",
+    });
+    const video = el({ "data-start": "1", "data-duration": "4", "data-end": "5" }, host);
+    const window = resolveNestedHostWindow(video);
+    expect(window).toMatchObject({ offset: 3.5, windowStart: 5, limit: 7, hasInPoint: true });
+    expect(mapClipThroughHostWindow(1, 5, 0, window!, true)).toEqual({
+      start: 5,
+      end: 7,
+      mediaStart: 0.5,
+    });
+  });
+
   it("still head-trims when the slot is at t=0", () => {
     const host = el({
       "data-composition-file": "scene.html",

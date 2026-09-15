@@ -49,6 +49,14 @@ function referencedDuration(target: AttrNode, targetStart: number): number | nul
   return Number.isFinite(delta) && delta > 0 ? delta : null;
 }
 
+/** `data-end`, else start + `data-duration` — the window the runtime hides at. */
+function parseHostEnd(host: AttrNode, hostStart: number): number | null {
+  const end = parseNum(host, "data-end");
+  if (end != null) return end;
+  const duration = parseNum(host, "data-duration");
+  return duration == null ? null : hostStart + duration;
+}
+
 function findStartTarget(host: AttrNode, refId: string): AttrNode | null {
   const doc = host.ownerDocument;
   if (!doc) return null;
@@ -101,7 +109,7 @@ export function resolveNestedHostWindow(element: AttrNode): NestedHostWindow | n
   const visiting = new Set<AttrNode>();
   for (const host of hosts.reverse()) {
     const hostStart = parseHostStart(host, visiting);
-    const hostEnd = parseNum(host, "data-end");
+    const hostEnd = parseHostEnd(host, hostStart);
     const inPoint = parseCompositionInPoint(host);
     if (inPoint > 0) hasInPoint = true;
     windowStart = Math.max(windowStart, offset + hostStart);
