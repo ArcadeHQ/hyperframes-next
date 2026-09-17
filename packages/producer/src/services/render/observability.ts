@@ -30,6 +30,12 @@ export interface BrowserDiagnosticSummary {
   consoleWarnings: number;
 }
 
+/**
+ * Which capture stage produced the frames. Maps 1:1 from `CapturePlan.kind`
+ * (see `capturePathForPlanKind`); named in render telemetry as `capture_path`.
+ */
+export type CapturePath = "streaming" | "disk" | "segmented" | "hdr_layered";
+
 export interface RenderCaptureObservability {
   forceScreenshot: boolean;
   captureMode: "screenshot" | "beginframe";
@@ -176,6 +182,23 @@ export interface RenderCaptureObservability {
    */
   transientRetries?: number;
   memoryExhaustionDetected?: boolean;
+  /**
+   * Chrome process memory from the engine's per-session sampler (Phase −1 of
+   * the long-form render plan). Updated live during capture so a
+   * render_error still carries the last known state — the failure path never
+   * builds a RenderPerfSummary, so this is the only channel that survives a
+   * mid-capture target loss.
+   */
+  chromeBrowserRssPeakMb?: number;
+  chromeRendererRssPeakMb?: number;
+  chromeRssLastMb?: number;
+  chromeGpuProcessSeenLastSample?: boolean;
+  chromeMemorySamples?: number;
+  /** Which capture stage ran. Set once the capture plan resolves. */
+  capturePath?: CapturePath;
+  /** Segmented capture only (Phase 2): current segment and retries so far. */
+  segmentIndex?: number;
+  segmentRetries?: number;
 }
 
 export interface RenderExtractionObservability {

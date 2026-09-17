@@ -9,6 +9,8 @@
  * transition between variants.
  */
 
+import type { CapturePath } from "./observability.js";
+
 export type CapturePlanTarget = Readonly<{
   kind: "sdr_streaming" | "sdr_disk";
   workerCount: number;
@@ -50,6 +52,22 @@ export interface HdrLayeredCapturePlan extends CapturePlanBase {
 }
 
 export type CapturePlan = SdrStreamingCapturePlan | SdrDiskCapturePlan | HdrLayeredCapturePlan;
+
+/**
+ * Telemetry name for the stage a plan runs on. Exhaustive over `CapturePlan`,
+ * so a new plan kind fails to compile until it declares its capture path
+ * rather than silently reporting the wrong one.
+ */
+export function capturePathForPlanKind(kind: CapturePlan["kind"]): CapturePath {
+  switch (kind) {
+    case "sdr_streaming":
+      return "streaming";
+    case "sdr_disk":
+      return "disk";
+    case "hdr_layered":
+      return "hdr_layered";
+  }
+}
 
 export interface CreateCapturePlanInput {
   workerCount: number;
