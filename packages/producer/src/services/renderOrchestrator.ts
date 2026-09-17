@@ -2190,9 +2190,12 @@ export function shouldPreferParallelDrawElement(args: {
    * (`shouldUseStreamingEncode` at the router's worker count with
    * forceParallelStream). The router's entire value is that path; without it
    * firing would pin workerCount to 3 and skip calibration while delivering
-   * none of the benefit — e.g. a composition longer than
-   * `streamingEncodeMaxDurationSeconds` (240 s default), where the duration
-   * cap disables streaming before the router's force flag is consulted.
+   * none of the benefit — e.g. png-sequence / gif output, streaming disabled
+   * by config, or — only when the operator opt-in
+   * `streamingEncodeDurationCapEnabled` is on — a composition longer than
+   * `streamingEncodeMaxDurationSeconds` (240 s), where the duration cap
+   * disables streaming before the router's force flag is consulted. With the
+   * cap off (the default) long compositions are eligible here too.
    */
   parallelStreamingAvailable: boolean;
   /** Machine RAM (os.totalmem, MB). */
@@ -3531,8 +3534,9 @@ async function executeRenderPipeline(input: {
         process.env.PRODUCER_EXPERIMENTAL_FAST_CAPTURE === "true" ||
         process.env.HF_DE_PARALLEL_STREAM === "true",
       routerEnabled: deParallelRouterEnabled,
-      // Router pins 3 workers for the streaming path; don't pin when the
-      // duration cap (or any other streaming gate) would turn that path off.
+      // Router pins 3 workers for the streaming path; don't pin when a
+      // streaming gate (config, format, or the opt-in duration cap) would turn
+      // that path off.
       parallelStreamingAvailable: shouldUseStreamingEncode(
         cfg,
         outputFormat,

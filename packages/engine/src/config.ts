@@ -163,7 +163,10 @@ export interface EngineConfig {
    * Max composition duration eligible for streaming encode (seconds). Only
    * applied when `streamingEncodeDurationCapEnabled` is true. Historical: the
    * 240 s default (#579) guarded a total-render ffmpeg timeout that became an
-   * inactivity timeout in efc16a945, so the cap is off by default.
+   * inactivity timeout in efc16a945, so the cap is off by default. Because of
+   * that, `PRODUCER_STREAMING_ENCODE_MAX_DURATION_SECONDS=0` no longer
+   * disables streaming on its own; `PRODUCER_ENABLE_STREAMING_ENCODE=false`
+   * is the supported off switch.
    */
   streamingEncodeMaxDurationSeconds: number;
   /**
