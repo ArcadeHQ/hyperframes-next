@@ -116,7 +116,7 @@ describe("sampleProcessRss", () => {
   });
 
   it("drops invalid pids and duplicates before calling ps", async () => {
-    const calls: readonly string[][] = [];
+    const calls: Array<readonly string[]> = [];
     const exec = async (_file: string, args: readonly string[]) => {
       calls.push(args);
       return { stdout: " 3 1024\n 4 2048\n" };
