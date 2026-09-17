@@ -138,6 +138,26 @@ describe("createChromeMemorySampler", () => {
     expect(sampler.stats()).toEqual(empty);
   });
 
+  it("unrefs the interval so a forgotten stop() cannot hold the process open", () => {
+    // Real timers: a real NodeJS.Timeout reports hasRef(); the interval is far
+    // enough out that no tick fires during the test.
+    let handle: NodeJS.Timeout | undefined;
+    const sampler = createChromeMemorySampler({
+      getPids: async () => ({ browser: 1, renderers: [], gpu: [] }),
+      sampleRss: async () => [{ pid: 1, rssMb: 1 }],
+      intervalMs: 60_000,
+      setIntervalFn: (callback, ms) => {
+        handle = setInterval(callback, ms);
+        return handle;
+      },
+    });
+    sampler.start();
+    if (handle === undefined) throw new Error("start() did not schedule an interval");
+    const refed = handle.hasRef();
+    sampler.stop();
+    expect(refed).toBe(false);
+  });
+
   it("start() twice schedules a single interval; stop() is safe before start and twice", async () => {
     vi.useFakeTimers();
     const sampler = createChromeMemorySampler({

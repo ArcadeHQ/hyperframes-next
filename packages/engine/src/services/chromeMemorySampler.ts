@@ -21,13 +21,24 @@ export interface ChromePids {
   gpu: number[];
 }
 
+/**
+ * Timer seams, typed to the two-argument shape the sampler uses rather than
+ * `typeof setInterval`: with the DOM lib in scope that type also carries the
+ * `(handler, timeout) => number` overload, so a test could only satisfy it
+ * with a cast. The globals are assignable to these narrower shapes.
+ */
+type SetIntervalFn = (callback: () => void, ms: number) => NodeJS.Timeout;
+type ClearIntervalFn = (timer: NodeJS.Timeout) => void;
+
 export interface ChromeMemorySamplerDeps {
   getPids: () => Promise<ChromePids>;
   sampleRss: (pids: readonly number[]) => Promise<ProcessRssSample[]>;
   intervalMs: number;
   onSample?: (stats: ChromeMemoryStats) => void;
-  setIntervalFn?: typeof setInterval;
-  clearIntervalFn?: typeof clearInterval;
+  /** Test seam; defaults to the global setInterval. */
+  setIntervalFn?: SetIntervalFn;
+  /** Test seam; defaults to the global clearInterval. */
+  clearIntervalFn?: ClearIntervalFn;
 }
 
 export interface ChromeMemorySampler {
@@ -69,10 +80,10 @@ export function mergeSample(
 }
 
 export function createChromeMemorySampler(deps: ChromeMemorySamplerDeps): ChromeMemorySampler {
-  const setIntervalFn = deps.setIntervalFn ?? setInterval;
-  const clearIntervalFn = deps.clearIntervalFn ?? clearInterval;
+  const setIntervalFn: SetIntervalFn = deps.setIntervalFn ?? setInterval;
+  const clearIntervalFn: ClearIntervalFn = deps.clearIntervalFn ?? clearInterval;
   let stats: ChromeMemoryStats = { samples: 0 };
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: NodeJS.Timeout | null = null;
   let inFlight = false;
 
   const sampleOnce = async (): Promise<void> => {
