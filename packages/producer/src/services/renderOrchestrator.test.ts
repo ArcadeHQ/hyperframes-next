@@ -25,6 +25,7 @@ import {
   closeOrphanedProbeForRetry,
   describeMemoryExhaustion,
   executeDiskCaptureWithAdaptiveRetry,
+  explainStreamingEncodeGate,
   collectVideoMetadataHints,
   collectVideoReadinessSkipIds,
   extractStandaloneEntryFromIndex,
@@ -586,23 +587,130 @@ describe("shouldUseStreamingEncode", () => {
     );
   });
 
-  it("keeps renders over the configured max duration on normal encoding", () => {
-    expect(shouldUseStreamingEncode(streamingEnabledConfig, "mp4", 1, 240)).toBe(true);
-    expect(shouldUseStreamingEncode(streamingEnabledConfig, "mp4", 1, 240.001)).toBe(false);
+  it("ignores the duration cap unless streamingEncodeDurationCapEnabled is true", () => {
+    expect(shouldUseStreamingEncode(streamingEnabledConfig, "mp4", 1, 240.001)).toBe(true);
+    expect(shouldUseStreamingEncode(streamingEnabledConfig, "mp4", 1, 3600)).toBe(true);
     expect(
       shouldUseStreamingEncode(
-        { enableStreamingEncode: true, streamingEncodeMaxDurationSeconds: 120 },
+        { ...streamingEnabledConfig, streamingEncodeDurationCapEnabled: true },
+        "mp4",
+        1,
+        240.001,
+      ),
+    ).toBe(false);
+    expect(
+      shouldUseStreamingEncode(
+        {
+          enableStreamingEncode: true,
+          streamingEncodeMaxDurationSeconds: 120,
+          streamingEncodeDurationCapEnabled: true,
+        },
         "mp4",
         1,
         120.001,
       ),
     ).toBe(false);
+    expect(
+      shouldUseStreamingEncode(
+        { ...streamingEnabledConfig, streamingEncodeDurationCapEnabled: true },
+        "mp4",
+        1,
+        240,
+      ),
+    ).toBe(true);
   });
 
   it("keeps long single-worker renders streaming in low-memory mode", () => {
     expect(
       shouldUseStreamingEncode({ ...streamingEnabledConfig, lowMemoryMode: true }, "mp4", 1, 411),
     ).toBe(true);
+  });
+});
+
+describe("explainStreamingEncodeGate", () => {
+  const cfg = {
+    enableStreamingEncode: true,
+    streamingEncodeMaxDurationSeconds: 240,
+    lowMemoryMode: false,
+  };
+
+  it("names the reason for every decision", () => {
+    expect(
+      explainStreamingEncodeGate({ ...cfg, enableStreamingEncode: false }, "mp4", 1, 10),
+    ).toEqual({ enabled: false, reason: "disabled_by_config" });
+    expect(explainStreamingEncodeGate(cfg, "png-sequence", 1, 10)).toEqual({
+      enabled: false,
+      reason: "format_excluded",
+    });
+    expect(explainStreamingEncodeGate(cfg, "gif", 1, 10)).toEqual({
+      enabled: false,
+      reason: "format_excluded",
+    });
+    expect(explainStreamingEncodeGate(cfg, "mp4", 1, 0)).toEqual({
+      enabled: false,
+      reason: "invalid_duration",
+    });
+    expect(explainStreamingEncodeGate(cfg, "mp4", 1, Number.NaN)).toEqual({
+      enabled: false,
+      reason: "invalid_duration",
+    });
+    expect(
+      explainStreamingEncodeGate(
+        { ...cfg, streamingEncodeDurationCapEnabled: true },
+        "mp4",
+        1,
+        300,
+      ),
+    ).toEqual({ enabled: false, reason: "duration_cap" });
+    expect(
+      explainStreamingEncodeGate(
+        { ...cfg, streamingEncodeDurationCapEnabled: true, lowMemoryMode: true },
+        "mp4",
+        1,
+        300,
+      ),
+    ).toEqual({ enabled: true, reason: "low_memory_mode" });
+    expect(explainStreamingEncodeGate(cfg, "mp4", 3, 300, true)).toEqual({
+      enabled: true,
+      reason: "parallel_forced",
+    });
+    expect(explainStreamingEncodeGate(cfg, "mp4", 1, 300)).toEqual({
+      enabled: true,
+      reason: "single_worker",
+    });
+    expect(explainStreamingEncodeGate(cfg, "mp4", 2, 300)).toEqual({
+      enabled: false,
+      reason: "multi_worker",
+    });
+  });
+
+  it("low-memory mode only bypasses the cap; it never streams an unforced multi-worker render", () => {
+    // `--low-memory-mode --workers 4` is a real combination (only the
+    // single-worker pin is bypassed by an explicit worker count). The
+    // contiguous-chunk parallel writer stalls, so the gate must still say no.
+    expect(
+      explainStreamingEncodeGate(
+        { ...cfg, streamingEncodeDurationCapEnabled: true, lowMemoryMode: true },
+        "mp4",
+        4,
+        300,
+      ),
+    ).toEqual({ enabled: false, reason: "multi_worker" });
+  });
+
+  it("agrees with shouldUseStreamingEncode on every input", () => {
+    const cases: Array<[typeof cfg, "mp4" | "webm" | "gif", number, number, boolean]> = [
+      [cfg, "mp4", 1, 10, false],
+      [cfg, "mp4", 2, 10, false],
+      [cfg, "mp4", 2, 10, true],
+      [cfg, "gif", 1, 10, false],
+      [{ ...cfg, enableStreamingEncode: false }, "mp4", 1, 10, false],
+    ];
+    for (const [c, format, workers, duration, force] of cases) {
+      expect(shouldUseStreamingEncode(c, format, workers, duration, force)).toBe(
+        explainStreamingEncodeGate(c, format, workers, duration, force).enabled,
+      );
+    }
   });
 });
 
