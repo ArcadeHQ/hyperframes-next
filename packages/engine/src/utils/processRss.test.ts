@@ -26,6 +26,10 @@ describe("parseTasklistCsv", () => {
       parseTasklistCsv(4242, "INFO: No tasks are running which match the specified criteria."),
     ).toEqual([]);
   });
+
+  it("returns [] when the memory column is not a positive number", () => {
+    expect(parseTasklistCsv(7, '"chrome.exe","7","Console","1","N/A"\r\n')).toEqual([]);
+  });
 });
 
 describe("sampleProcessRss", () => {
@@ -52,6 +56,18 @@ describe("sampleProcessRss", () => {
     const result = await sampleProcessRss([9], exec, "win32");
     expect(calls).toEqual([["/FO", "CSV", "/NH", "/FI", "PID eq 9"]]);
     expect(result).toEqual([{ pid: 9, rssMb: 2 }]);
+  });
+
+  it("drops invalid pids and duplicates before calling ps", async () => {
+    const calls: readonly string[][] = [];
+    const exec = async (_file: string, args: readonly string[]) => {
+      calls.push(args);
+      return { stdout: " 3 1024\n 4 2048\n" };
+    };
+    // NaN / 0 / -1 / 2.5 must never reach `ps -p`: one bad pid fails the
+    // whole call and every other pid's sample is lost with it.
+    await sampleProcessRss([3, 3, NaN, 0, -1, 2.5, 4], exec, "darwin");
+    expect(calls).toEqual([["-o", "pid=,rss=", "-p", "3,4"]]);
   });
 
   it("returns [] on empty input without calling exec", async () => {
