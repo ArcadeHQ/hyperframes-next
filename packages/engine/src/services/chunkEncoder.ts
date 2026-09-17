@@ -7,13 +7,18 @@
  */
 
 import {
+  closeSync,
   copyFileSync,
   existsSync,
+  ftruncateSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readFileSync,
   readdirSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from "fs";
 import { join, dirname, extname } from "path";
 import { DEFAULT_CONFIG, type EngineConfig } from "../config.js";
@@ -775,6 +780,154 @@ export async function muxVideoWithAudio(
   return {
     success: result.success,
     outputPath,
+    durationMs: result.durationMs,
+    error: !result.success ? formatFfmpegError(result.exitCode, result.stderr) : undefined,
+    failureReason: result.failureReason,
+  };
+}
+
+export const HLS_MASTER_PLAYLIST = "master.m3u8";
+export const HLS_VIDEO_PLAYLIST = "video.m3u8";
+export const HLS_AUDIO_PLAYLIST = "audio.m3u8";
+
+/**
+ * Drop the standalone audio-only variant ffmpeg's `-var_stream_map` adds to
+ * the master playlist.
+ *
+ * With `a:0,agroup:aud` the hls muxer lists the audio rendition twice: as the
+ * `#EXT-X-MEDIA:TYPE=AUDIO` entry the video variant references (wanted), and
+ * again as its own `#EXT-X-STREAM-INF` variant with no `RESOLUTION` (not
+ * wanted). That is valid HLS, but a player choosing variants by bandwidth can
+ * pick it and play sound with no picture, and the VOD consumer asked for a
+ * single rendition. A variant tag without a `RESOLUTION` attribute is
+ * audio-only; its URI is always the following line, so both go.
+ */
+export function stripAudioOnlyVariants(masterPlaylist: string): string {
+  const lines = masterPlaylist.split("\n");
+  const kept: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith("#EXT-X-STREAM-INF:") && !line.includes("RESOLUTION=")) {
+      // ffmpeg separates variants with a blank line; drop the one before this
+      // variant so the master does not end up with two in a row.
+      if (kept.at(-1) === "") kept.pop();
+      i += 1;
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+export interface PackageHlsOptions extends Partial<Pick<EngineConfig, "ffmpegProcessTimeout">> {
+  /** Whole seconds, so it matches the integer `EXT-X-TARGETDURATION` ffmpeg writes. */
+  segmentSeconds: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Stream-copy an H.264 video (and optional AAC sidecar) into an HLS VOD
+ * directory: `master.m3u8`, `video.m3u8` + `video_%05d.ts`, and `audio.m3u8` +
+ * `audio_%05d.ts` when audio is given. `outputPath` in the result is the directory.
+ * The master carries exactly one `#EXT-X-STREAM-INF` variant (the video, with
+ * the audio attached as a rendition group); see `stripAudioOnlyVariants`.
+ *
+ * `-hls_time` cuts at the first keyframe at or after each target, so the input
+ * must be encoded with the GOP lock (`gopSize = segmentSeconds × fps`). The lock
+ * is software-encoder only; a GPU encode will not segment on time.
+ */
+export async function packageHls(
+  videoPath: string,
+  audioPath: string | null,
+  outputDir: string,
+  options: PackageHlsOptions,
+): Promise<MuxResult> {
+  const { segmentSeconds, signal } = options;
+  if (!Number.isInteger(segmentSeconds) || segmentSeconds <= 0) {
+    throw new Error(
+      `[chunkEncoder] packageHls requires a positive integer segmentSeconds (received ${String(segmentSeconds)})`,
+    );
+  }
+  // `-hls_segment_filename` is a printf template and the hls muxer does not honor `%%`.
+  if (outputDir.includes("%")) {
+    throw new Error(`[chunkEncoder] packageHls outputDir must not contain "%": ${outputDir}`);
+  }
+
+  // ffmpeg does not create the directory for the segment pattern.
+  if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
+
+  const hasAudio = audioPath !== null;
+  const args = hasAudio
+    ? ["-i", videoPath, "-i", audioPath, "-map", "0:v:0", "-map", "1:a:0"]
+    : ["-i", videoPath, "-map", "0:v:0"];
+
+  args.push(
+    "-c",
+    "copy",
+    "-f",
+    "hls",
+    "-hls_time",
+    String(segmentSeconds),
+    "-hls_playlist_type",
+    "vod",
+    "-hls_flags",
+    "independent_segments",
+    "-hls_segment_type",
+    "mpegts",
+    "-var_stream_map",
+    hasAudio ? "v:0,agroup:aud,name:video a:0,agroup:aud,name:audio" : "v:0,name:video",
+    "-master_pl_name",
+    HLS_MASTER_PLAYLIST,
+    "-hls_segment_filename",
+    join(outputDir, "%v_%05d.ts"),
+    // Without these the mpegts muxer starts the stream at PTS 1.4 s.
+    "-muxdelay",
+    "0",
+    "-muxpreload",
+    "0",
+  );
+
+  // No provenance tags (MPEG-TS drops them; `-movflags` is invalid for `-f hls`)
+  // and no `-avoid_negative_ts`, which would drop the AAC priming (#3487).
+  args.push("-y", join(outputDir, "%v.m3u8"));
+
+  const processTimeout = options.ffmpegProcessTimeout ?? DEFAULT_CONFIG.ffmpegProcessTimeout;
+  const result = await runFfmpeg(args, { signal, timeout: processTimeout });
+
+  if (signal?.aborted) {
+    return {
+      success: false,
+      outputPath: outputDir,
+      durationMs: result.durationMs,
+      error: "FFmpeg HLS packaging cancelled",
+    };
+  }
+  if (result.success && hasAudio) {
+    const masterPath = join(outputDir, HLS_MASTER_PLAYLIST);
+    // One descriptor for the read-modify-write: re-resolving the path to write
+    // it back races anything else in this predictable temp dir, and `r+` with
+    // owner-only mode neither creates nor widens the playlist ffmpeg wrote.
+    // A missing one is fine — the argument-level tests stub ffmpeg.
+    let master: number | undefined;
+    try {
+      master = openSync(masterPath, "r+", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (master !== undefined) {
+      try {
+        const stripped = stripAudioOnlyVariants(readFileSync(master, "utf-8"));
+        // Stripping only shortens the playlist; truncate or the tail survives.
+        ftruncateSync(master, 0);
+        writeSync(master, stripped, 0, "utf-8");
+      } finally {
+        closeSync(master);
+      }
+    }
+  }
+  return {
+    success: result.success,
+    outputPath: outputDir,
     durationMs: result.durationMs,
     error: !result.success ? formatFfmpegError(result.exitCode, result.stderr) : undefined,
     failureReason: result.failureReason,
