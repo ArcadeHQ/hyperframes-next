@@ -5,6 +5,7 @@
  * as video must expose `window.__hf` implementing the HfProtocol interface.
  */
 import type { Fps } from "@hyperframes/core";
+import type { ChromeMemoryStats } from "./services/chromeMemorySampler.js";
 import type { MotionBlurOptions } from "./services/motionBlur.js";
 
 /**
@@ -136,6 +137,13 @@ export interface CaptureOptions {
   compositionDurationSeconds?: number;
   /** The composition declares `data-requires-webgpu`; skips createCaptureSession's own fetch. */
   requiresWebGpu?: boolean;
+  /**
+   * Live Chrome memory samples during capture (browser/renderer RSS peaks,
+   * last total, GPU process presence). Invoked from an unref'd interval; must
+   * not throw. The producer forwards these to capture observability so a
+   * crash mid-render still reports the last known memory state.
+   */
+  onMemorySample?: (stats: ChromeMemoryStats) => void;
   /**
    * Frame rate as an exact rational. Integer fps is `{ num: 30, den: 1 }`;
    * NTSC is `{ num: 30000, den: 1001 }`. Captures are scheduled by the
