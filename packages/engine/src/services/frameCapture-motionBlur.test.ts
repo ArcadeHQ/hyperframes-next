@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   captureFrame,
   captureFrameToBuffer,
+  computeStaticFrameSet,
   resolveSessionMotionBlur,
   type CaptureSession,
 } from "./frameCapture.js";
@@ -73,7 +74,10 @@ function makeSession(overrides: Partial<CaptureSession> = {}): CaptureSession {
       totalMs: 0,
       frameMs: [],
     },
-    motionBlur: resolveMotionBlurPlan({}) ?? undefined,
+    // Fixed K=16 by default so the tests in this file that predate adaptive sampling
+    // (accumulation, event suppression, dedup composition) keep testing exactly what
+    // they did before — adaptive selection gets its own describe block below.
+    motionBlur: resolveMotionBlurPlan({ samplesPerFrame: 16 }) ?? undefined,
     ...overrides,
   } as unknown as CaptureSession;
 }
@@ -174,21 +178,30 @@ describe("sub-frame accumulation reaches the page with distinct sample times", (
 describe("accumulation composes with static-frame dedup", () => {
   // 720 degrees is the widest shutter After Effects offers, and the AD5 reference export
   // uses it, so it is the case a reader is most likely to check the frame ranges against.
-  const wideShutter = resolveMotionBlurPlan({ shutterAngle: 720, shutterPhase: -360 }) ?? undefined;
+  // Fixed K=16, same reason as makeSession's default above.
+  const wideShutter =
+    resolveMotionBlurPlan({ shutterAngle: 720, shutterPhase: -360, samplesPerFrame: 16 }) ??
+    undefined;
 
-  it("pays nothing on a static frame instead of capturing K samples of the same instant", async () => {
+  /** Reuse claims frame 11's blurred output equals frame 10's, so the whole window
+   * either side of it must be static for that claim to be true. */
+  async function expectFrame11Reused(overrides: Partial<CaptureSession>) {
     const anchor = solidPng(42);
     const session = makeSession({
-      // The whole window either side of frame 11 is static, which is what reuse claims.
       staticFrames: new Set([9, 10, 11, 12]),
       lastFrameBuffer: anchor,
       lastFrameAbsoluteIndex: 10,
+      ...overrides,
     });
-
     const result = await captureFrameToBuffer(session, 11, 11 / 30);
-
     expect(result.buffer).toBe(anchor);
     expect(vi.mocked(pageScreenshotCapture)).not.toHaveBeenCalled();
+    return session;
+  }
+
+  it("pays nothing on a static frame instead of capturing K samples of the same instant", async () => {
+    const session = await expectFrame11Reused({});
+
     expect(seeks).toHaveLength(0);
     expect(session.staticDedupCount).toBe(1);
   });
@@ -225,18 +238,7 @@ describe("accumulation composes with static-frame dedup", () => {
   });
 
   it("still reuses at 720 degrees when the whole window is static", async () => {
-    const anchor = solidPng(42);
-    const session = makeSession({
-      motionBlur: wideShutter,
-      staticFrames: new Set([9, 10, 11, 12]),
-      lastFrameBuffer: anchor,
-      lastFrameAbsoluteIndex: 10,
-    });
-
-    const result = await captureFrameToBuffer(session, 11, 11 / 30);
-
-    expect(result.buffer).toBe(anchor);
-    expect(vi.mocked(pageScreenshotCapture)).not.toHaveBeenCalled();
+    await expectFrame11Reused({ motionBlur: wideShutter });
   });
 });
 
@@ -279,7 +281,10 @@ describe("resolveSessionMotionBlur rejects what accumulation cannot render", () 
   });
 
   it("resolves a plan for a screenshot-mode PNG session", () => {
-    expect(resolveSessionMotionBlur(withOptions({}))?.sampleTickOffsets).toHaveLength(16);
+    const plan = resolveSessionMotionBlur(withOptions({}));
+    expect(plan).not.toBeUndefined();
+    // `options.motionBlur: {}` sets no explicit samplesPerFrame, so the plan is adaptive.
+    expect(plan?.fixedSamplesPerFrame).toBeNull();
   });
 
   it("rejects a capture mode whose sampling is not implemented yet", () => {
@@ -298,5 +303,224 @@ describe("resolveSessionMotionBlur rejects what accumulation cannot render", () 
     expect(() =>
       resolveSessionMotionBlur(withOptions({ onBeforeCapture: async () => {} })),
     ).toThrow(/video/);
+  });
+});
+
+describe("adaptive sample count (issue #4029)", () => {
+  // No explicit samplesPerFrame → adaptive.
+  const adaptivePlan = resolveMotionBlurPlan({}) ?? undefined;
+
+  it("probes the true window edges, escalates K on a large diff, and never lets a probe into the average", async () => {
+    // First two screenshots are the probes (0, 255 — a large diff); everything after is
+    // a constant 100, so if a probe leaked into the accumulator the average would move.
+    let call = 0;
+    vi.mocked(pageScreenshotCapture).mockImplementation(async () =>
+      solidPng(call++ < 2 ? [0, 255][call - 1] : 100),
+    );
+
+    const result = await captureFrameToBuffer(
+      makeSession({ motionBlur: adaptivePlan }),
+      10,
+      10 / 30,
+    );
+
+    // A 0/255 probe diff is well past the top step, so K=64.
+    expect(vi.mocked(pageScreenshotCapture)).toHaveBeenCalledTimes(2 + 64);
+    expect([...decodePng(result.buffer).data.slice(0, 4)]).toEqual([100, 100, 100, 255]);
+    // seeks[0] is the one eventful seek; the two probe seeks come right after it, both
+    // suppressed, and distinct from each other (the true window edges, not one point).
+    const [probeA, probeB] = seeks.slice(1, 3);
+    expect(probeA?.suppressEvents).toBe(true);
+    expect(probeB?.suppressEvents).toBe(true);
+    expect(probeA?.time).not.toBe(probeB?.time);
+  });
+
+  it("skips the probe and uses the floor for a frame confirmed non-spatial", async () => {
+    let calls = 0;
+    vi.mocked(pageScreenshotCapture).mockImplementation(async () => {
+      calls++;
+      return solidPng(50);
+    });
+
+    await captureFrameToBuffer(
+      makeSession({ motionBlur: adaptivePlan, motionBlurNonSpatialFrames: new Set([10]) }),
+      10,
+      10 / 30,
+    );
+
+    expect(calls).toBe(16); // floor only, no probe pair
+  });
+
+  it("probes (rather than assuming the floor) for a frame outside the confirmed non-spatial set", async () => {
+    let calls = 0;
+    vi.mocked(pageScreenshotCapture).mockImplementation(async () => {
+      calls++;
+      return solidPng(50); // identical probes -> zero diff -> floor, but via the probe path
+    });
+
+    await captureFrameToBuffer(
+      makeSession({ motionBlur: adaptivePlan, motionBlurNonSpatialFrames: new Set([999]) }),
+      10,
+      10 / 30,
+    );
+
+    expect(calls).toBe(2 + 16); // probed, diff was zero, landed on the floor anyway
+  });
+});
+
+describe("computeStaticFrameSet classifies spatial vs non-spatial intervals", () => {
+  function makePage(intervals: Array<{ start: number; end: number; spatial: boolean }>) {
+    return {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          intervals,
+          tweenCount: intervals.length,
+          duration: 10,
+          hasVideo: false,
+          hasCanvas: false,
+          hasNonGsapAnim: false,
+          hasUnresolvableClipStart: false,
+          hasTimelineCall: false,
+        })
+        .mockResolvedValueOnce([]), // computeClipBoundaryFrames' own [data-start] scan
+    } as unknown as Parameters<typeof computeStaticFrameSet>[0];
+  }
+
+  it("marks a frame touched only by a non-spatial interval (e.g. opacity) as safe to skip the probe", async () => {
+    const page = makePage([{ start: 0, end: 1, spatial: false }]);
+
+    const result = await computeStaticFrameSet(page, 30);
+
+    expect(result.eligible).toBe(true);
+    expect(result.nonSpatialOnlyFrameSet.has(0)).toBe(true);
+  });
+
+  it("does not mark a frame touched by any spatial interval (e.g. x), even alongside a non-spatial one", async () => {
+    const page = makePage([
+      { start: 0, end: 1, spatial: false },
+      { start: 0, end: 1, spatial: true },
+    ]);
+
+    const result = await computeStaticFrameSet(page, 30);
+
+    expect(result.nonSpatialOnlyFrameSet.has(0)).toBe(false);
+  });
+
+  it("reports an empty set when the analysis is ineligible, never a false 'confirmed non-spatial'", async () => {
+    const page = {
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          intervals: [{ start: 0, end: 1, spatial: false }],
+          tweenCount: 0, // no GSAP tweens -> ineligible, per the existing "reasons" gate
+          duration: 10,
+          hasVideo: false,
+          hasCanvas: false,
+          hasNonGsapAnim: false,
+          hasUnresolvableClipStart: false,
+          hasTimelineCall: false,
+        })
+        .mockResolvedValueOnce([]), // computeClipBoundaryFrames' own [data-start] scan
+    } as unknown as Parameters<typeof computeStaticFrameSet>[0];
+
+    const result = await computeStaticFrameSet(page, 30);
+
+    expect(result.eligible).toBe(false);
+    expect(result.nonSpatialOnlyFrameSet.size).toBe(0);
+  });
+});
+
+describe("armStaticDedup reads the raw caller options for the adaptive gate, not the resolved plan", () => {
+  // armStaticDedup always runs before finalizeSessionInit sets session.motionBlur, so a
+  // gate reading that field is always false; it must read session.options.motionBlur.
+  const source = readFileSync(new URL("./frameCapture.ts", import.meta.url), "utf8");
+
+  it("gates the adaptive classification block on session.options.motionBlur", () => {
+    // Anchored on the `let` declaration, AFTER the explanatory comment above it, so this
+    // reads only the functional `if (...)` condition — not prose that could name either
+    // symbol without the code actually using it.
+    const start = source.indexOf("let sharedStaticFrameStats");
+    if (start < 0) throw new Error("sharedStaticFrameStats declaration not found");
+    const conditionEnd = source.indexOf(") {", start);
+    const condition = source.slice(start, conditionEnd);
+    expect(condition).toContain("session.options.motionBlur");
+    // Bare "session.motionBlur" (the resolved plan) not followed by a letter, so this
+    // does not false-positive on the unrelated "session.motionBlurNonSpatialFrames".
+    expect(condition).not.toMatch(/session\.motionBlur(?![A-Za-z])/);
+  });
+
+  it("every armStaticDedup call site runs before finalizeSessionInit in the same init path", () => {
+    // Confirms the premise: if a future refactor made these coincide, the raw-options
+    // gate above would still be correct (session.options.motionBlur is set unconditionally
+    // at session creation), but this pins today's actual ordering as documented context.
+    const finalizeCalls = [...source.matchAll(/finalizeSessionInit\(session\)/g)].map(
+      (m) => m.index as number,
+    );
+    const armCalls = [...source.matchAll(/armStaticDedup\(session,/g)].map(
+      (m) => m.index as number,
+    );
+    expect(finalizeCalls.length).toBeGreaterThan(0);
+    for (const finalizeAt of finalizeCalls) {
+      const precedingArm = armCalls.filter((a) => a < finalizeAt).at(-1);
+      expect(precedingArm).toBeDefined();
+    }
+  });
+});
+
+describe("computeStaticFrameSet's real page-side property matching (not a canned mock)", () => {
+  // Runs the ACTUAL closure passed to page.evaluate, against a stubbed window/document —
+  // the other computeStaticFrameSet tests above mock the whole result and never exercise
+  // isSpatial()/SPATIAL_PROPS at all, which is how xPercent/yPercent went unclassified.
+  function makeTimeline(vars: Record<string, unknown>) {
+    const child = { startTime: () => 0, duration: () => 1, totalDuration: () => 1, vars };
+    return { getChildren: () => [child], duration: () => 1 };
+  }
+
+  function makePage(timelines: Record<string, unknown>) {
+    const root = globalThis as Record<string, unknown>;
+    root.window = { __timelines: timelines, __hf: { duration: 1 } };
+    root.document = {
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      getAnimations: undefined,
+    };
+    return {
+      evaluate: async (fn: unknown, ...args: unknown[]) =>
+        typeof fn === "function" ? (fn as (...a: unknown[]) => unknown)(...args) : undefined,
+    } as unknown as Parameters<typeof computeStaticFrameSet>[0];
+  }
+
+  afterEach(() => {
+    const root = globalThis as Record<string, unknown>;
+    delete root.window;
+    delete root.document;
+  });
+
+  it.each(["xPercent", "yPercent", "perspective", "transformPerspective", "rotate"])(
+    "classifies a tween on %s as spatial",
+    async (prop) => {
+      const page = makePage({ main: makeTimeline({ [prop]: 50 }) });
+
+      const result = await computeStaticFrameSet(page, 30);
+
+      expect(result.nonSpatialOnlyFrameSet.has(0)).toBe(false);
+    },
+  );
+
+  it("does not classify transformOrigin alone as spatial (a pivot-point modifier, not independent motion)", async () => {
+    const page = makePage({ main: makeTimeline({ transformOrigin: "center" }) });
+
+    const result = await computeStaticFrameSet(page, 30);
+
+    expect(result.nonSpatialOnlyFrameSet.has(0)).toBe(true);
+  });
+
+  it("classifies a tween on opacity as non-spatial", async () => {
+    const page = makePage({ main: makeTimeline({ opacity: 0.5 }) });
+
+    const result = await computeStaticFrameSet(page, 30);
+
+    expect(result.nonSpatialOnlyFrameSet.has(0)).toBe(true);
   });
 });
