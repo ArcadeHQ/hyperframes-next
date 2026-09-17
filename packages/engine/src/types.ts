@@ -361,6 +361,14 @@ export interface CapturePerfSummary {
    * see `classifyGpuRenderer`.
    */
   gpuRenderer?: string;
+  // ── Chrome process memory (spec: long-form render capture, Phase −1).
+  // Undefined when the sampler was disabled (HF_CHROME_MEMORY_SAMPLER=false)
+  // or never produced a successful sample. ──
+  chromeBrowserRssPeakMb?: number;
+  chromeRendererRssPeakMb?: number;
+  chromeRssLastMb?: number;
+  chromeGpuProcessSeenLastSample?: boolean;
+  chromeMemorySamples?: number;
   /**
    * Low-cardinality init-time gate that routed a drawElement-eligible session
    * to the baseline: `swiftshader` | `css_effect:<fx>` | `at_risk_timeline` |
