@@ -125,6 +125,38 @@ describe("createChromeMemorySampler", () => {
     expect(maxInFlight).toBe(1);
   });
 
+  it("stop(); await sampleOnce() joins an in-flight tick: stats current at close, no late onSample", async () => {
+    // Mirrors the closeCaptureSession sequence. The tick at 100 ms is still
+    // waiting on getPids (350 ms) when close runs; the close-time sample must
+    // resolve after that tick has merged, not before.
+    vi.useFakeTimers();
+    const onSample = vi.fn();
+    const sampler = createChromeMemorySampler({
+      getPids: async () => {
+        await new Promise((r) => setTimeout(r, 350));
+        return { browser: 1, renderers: [], gpu: [] };
+      },
+      sampleRss: async () => [{ pid: 1, rssMb: 1 }],
+      intervalMs: 100,
+      onSample,
+    });
+    sampler.start();
+    await vi.advanceTimersByTimeAsync(150);
+    sampler.stop();
+    let samplesAtClose = -1;
+    let onSampleCallsAtClose = -1;
+    const closing = sampler.sampleOnce().then(() => {
+      samplesAtClose = sampler.stats().samples;
+      onSampleCallsAtClose = onSample.mock.calls.length;
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await closing;
+    expect(samplesAtClose).toBe(1);
+    expect(onSampleCallsAtClose).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onSample).toHaveBeenCalledTimes(1);
+  });
+
   it("does not invoke onSample when a sample returned no rows", async () => {
     const onSample = vi.fn();
     const sampler = createChromeMemorySampler({

@@ -45,7 +45,12 @@ export interface ChromeMemorySampler {
   start(): void;
   stop(): void;
   stats(): ChromeMemoryStats;
-  /** One synchronous-to-the-caller sample; used by tests and by close(). */
+  /**
+   * One sample, awaited by the caller; used by tests and by close(). If a
+   * sample is already in flight this resolves when that sample finishes
+   * instead of starting another, so `stop(); await sampleOnce()` always sees
+   * the running tick's result and `onSample` cannot fire after it resolves.
+   */
   sampleOnce(): Promise<void>;
 }
 
@@ -84,11 +89,9 @@ export function createChromeMemorySampler(deps: ChromeMemorySamplerDeps): Chrome
   const clearIntervalFn: ClearIntervalFn = deps.clearIntervalFn ?? clearInterval;
   let stats: ChromeMemoryStats = { samples: 0 };
   let timer: NodeJS.Timeout | null = null;
-  let inFlight = false;
+  let inFlight: Promise<void> | null = null;
 
-  const sampleOnce = async (): Promise<void> => {
-    if (inFlight) return;
-    inFlight = true;
+  const runSample = async (): Promise<void> => {
     try {
       const pids = await deps.getPids();
       const all = [pids.browser, ...pids.renderers, ...pids.gpu].filter(
@@ -103,9 +106,20 @@ export function createChromeMemorySampler(deps: ChromeMemorySamplerDeps): Chrome
     } catch {
       // Sampling is observability only; a CDP or ps failure must never reach
       // the capture loop. The next tick retries.
-    } finally {
-      inFlight = false;
     }
+  };
+
+  const sampleOnce = (): Promise<void> => {
+    // Reentrancy guard: an interval tick that lands while a sample is still
+    // running joins it rather than stacking a second CDP/ps round-trip, and a
+    // close-time call waits for the running tick instead of skipping it.
+    // runSample never rejects, so the .finally reset always runs; it runs on
+    // a microtask, after the assignment below.
+    if (inFlight !== null) return inFlight;
+    inFlight = runSample().finally(() => {
+      inFlight = null;
+    });
+    return inFlight;
   };
 
   return {
