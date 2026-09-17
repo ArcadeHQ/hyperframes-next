@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parsePsRss, parseTasklistCsv, sampleProcessRss } from "./processRss.js";
+import {
+  parseProcStatusRss,
+  parsePsRss,
+  parseTasklistCsv,
+  sampleProcessRss,
+} from "./processRss.js";
 
 describe("parsePsRss", () => {
   it("parses pid and rss kilobytes into megabytes", () => {
@@ -32,7 +37,59 @@ describe("parseTasklistCsv", () => {
   });
 });
 
+describe("parseProcStatusRss", () => {
+  it("parses the VmRSS line of /proc/<pid>/status", () => {
+    const status =
+      "Name:\tchrome\nState:\tS (sleeping)\nVmPeak:\t 9999999 kB\nVmRSS:\t 1048576 kB\nThreads:\t12\n";
+    expect(parseProcStatusRss(4242, status)).toEqual([{ pid: 4242, rssMb: 1024 }]);
+  });
+
+  it("returns [] when VmRSS is absent (zombie) or zero", () => {
+    expect(parseProcStatusRss(1, "Name:\tchrome\nState:\tZ (zombie)\nThreads:\t1\n")).toEqual([]);
+    expect(parseProcStatusRss(1, "VmRSS:\t       0 kB\n")).toEqual([]);
+  });
+});
+
 describe("sampleProcessRss", () => {
+  it("reads /proc/<pid>/status per pid on linux and never shells out", async () => {
+    let execCalled = false;
+    const exec = async () => {
+      execCalled = true;
+      return { stdout: "" };
+    };
+    const reads: string[] = [];
+    const readStatus = async (path: string) => {
+      reads.push(path);
+      return `Name:\tchrome\nVmRSS:\t ${path.endsWith("/1/status") ? 1024 : 2048} kB\n`;
+    };
+    const result = await sampleProcessRss([1, 2], exec, "linux", readStatus);
+    expect(reads).toEqual(["/proc/1/status", "/proc/2/status"]);
+    expect(execCalled).toBe(false);
+    expect(result).toEqual([
+      { pid: 1, rssMb: 1 },
+      { pid: 2, rssMb: 2 },
+    ]);
+  });
+
+  it("omits only the pid whose /proc read fails on linux", async () => {
+    const exec = async () => ({ stdout: "" });
+    const readStatus = async (path: string) => {
+      if (path === "/proc/1/status") throw new Error("ENOENT");
+      return "VmRSS:\t 2048 kB\n";
+    };
+    expect(await sampleProcessRss([1, 2], exec, "linux", readStatus)).toEqual([
+      { pid: 2, rssMb: 2 },
+    ]);
+  });
+
+  it("never rejects on linux when every /proc read fails", async () => {
+    const exec = async () => ({ stdout: "" });
+    const readStatus = async () => {
+      throw new Error("ENOENT");
+    };
+    expect(await sampleProcessRss([1, 2], exec, "linux", readStatus)).toEqual([]);
+  });
+
   it("uses one ps call for all pids on posix", async () => {
     const calls: Array<{ file: string; args: readonly string[] }> = [];
     const exec = async (file: string, args: readonly string[]) => {
@@ -84,6 +141,8 @@ describe("sampleProcessRss", () => {
     const exec = async () => {
       throw new Error("ENOENT");
     };
-    expect(await sampleProcessRss([1], exec, "linux")).toEqual([]);
+    // darwin, not linux: linux no longer reaches exec at all.
+    expect(await sampleProcessRss([1], exec, "darwin")).toEqual([]);
+    expect(await sampleProcessRss([1], exec, "win32")).toEqual([]);
   });
 });

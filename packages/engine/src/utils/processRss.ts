@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
 export interface ProcessRssSample {
@@ -7,8 +8,11 @@ export interface ProcessRssSample {
 }
 
 export type ExecFileLike = (file: string, args: readonly string[]) => Promise<{ stdout: string }>;
+export type ReadFileLike = (path: string) => Promise<string>;
 
 const KB_PER_MB = 1024;
+
+const defaultReadFile: ReadFileLike = (path) => readFile(path, "utf8");
 
 function defaultExec(): ExecFileLike {
   // promisify lazily so vitest module mocks of child_process still take effect
@@ -46,18 +50,43 @@ export function parseTasklistCsv(pid: number, stdout: string): ProcessRssSample[
   return [{ pid, rssMb: Math.round(kb / KB_PER_MB) }];
 }
 
+/** `/proc/<pid>/status` line `VmRSS:\t  12345 kB`; absent for a zombie. */
+export function parseProcStatusRss(pid: number, status: string): ProcessRssSample[] {
+  const match = /^VmRSS:\s*(\d+)\s*kB/m.exec(status);
+  if (!match) return [];
+  const kb = Number(match[1]);
+  if (!Number.isFinite(kb) || kb <= 0) return [];
+  return [{ pid, rssMb: Math.round(kb / KB_PER_MB) }];
+}
+
 /**
- * Resident set size per pid, in MiB. Zero dependencies: `ps` on POSIX (one
- * call for all pids), `tasklist` on Windows (one call per pid). Never
+ * Resident set size per pid, in MiB. Zero dependencies: `/proc/<pid>/status`
+ * on Linux (the render images are `node:*-slim` and ship no `ps`; same
+ * precedent as the CLI's orphanCleanup / processTree), `ps` on other POSIX
+ * (one call for all pids), `tasklist` on Windows (one call per pid). Never
  * rejects; a pid that exited between discovery and sampling is simply absent.
  */
 export async function sampleProcessRss(
   pids: readonly number[],
   exec: ExecFileLike = defaultExec(),
   platform: NodeJS.Platform = process.platform,
+  readStatus: ReadFileLike = defaultReadFile,
 ): Promise<ProcessRssSample[]> {
   const unique = [...new Set(pids.filter((p) => Number.isInteger(p) && p > 0))];
   if (unique.length === 0) return [];
+  if (platform === "linux") {
+    // Per-pid catch: one exited pid must not erase the others' samples.
+    const perPid = await Promise.all(
+      unique.map(async (pid) => {
+        try {
+          return parseProcStatusRss(pid, await readStatus(`/proc/${pid}/status`));
+        } catch {
+          return [];
+        }
+      }),
+    );
+    return perPid.flat();
+  }
   try {
     if (platform === "win32") {
       const results: ProcessRssSample[] = [];
