@@ -37,6 +37,43 @@ describe("createRenderPlan", () => {
     expect(Object.isFrozen(plan.environment)).toBe(true);
   });
 
+  // GIF's Netscape frame-delay field is stored in centiseconds, so fps above
+  // 30 rounds to visually-indistinguishable delay values. createRenderPlan
+  // clamps and flags it so both the CLI console warning (present.ts) and
+  // render telemetry (gif_fps_capped) can report the same decision.
+  it("caps fps to 30 and flags it for --format gif above the ceiling", () => {
+    const plan = createRenderPlan({
+      dir: projectDir,
+      output: "result.gif",
+      format: "gif",
+      fps: "60",
+    });
+    expect(plan.fps).toEqual({ num: 30, den: 1 });
+    expect(plan.gifFpsCapped).toBe(true);
+  });
+
+  it("does not flag gifFpsCapped for gif fps at or below the ceiling", () => {
+    const plan = createRenderPlan({
+      dir: projectDir,
+      output: "result.gif",
+      format: "gif",
+      fps: "24",
+    });
+    expect(plan.fps).toEqual({ num: 24, den: 1 });
+    expect(plan.gifFpsCapped).toBe(false);
+  });
+
+  it("does not flag gifFpsCapped for non-gif formats regardless of fps", () => {
+    const plan = createRenderPlan({
+      dir: projectDir,
+      output: "result.mp4",
+      format: "mp4",
+      fps: "60",
+    });
+    expect(plan.fps).toEqual({ num: 60, den: 1 });
+    expect(plan.gifFpsCapped).toBe(false);
+  });
+
   // The catalog join reaches the render event through the plan, so a plan that
   // silently drops it would leave every render reporting no catalog items.
   it("resolves catalog usage from the project manifest and the render entry", () => {
@@ -209,6 +246,8 @@ describe("createRenderPlan", () => {
     );
     const plan = createRenderPlan({ dir: projectDir });
     expect(plan.authoringSkill).toBe("product-launch-video");
+    expect(plan.authoringSkillSource).toBe("project-config");
+    expect(plan.invalidAuthoringSkill).toBeUndefined();
   });
 
   it("lets an explicit --skill flag override the persisted project owner", () => {
@@ -218,5 +257,83 @@ describe("createRenderPlan", () => {
     );
     const plan = createRenderPlan({ dir: projectDir, skill: "motion-graphics" });
     expect(plan.authoringSkill).toBe("motion-graphics");
+    expect(plan.authoringSkillSource).toBe("flag");
+  });
+
+  it("reports no authoring skill source when neither a flag nor a project config resolved one", () => {
+    const plan = createRenderPlan({ dir: projectDir });
+    expect(plan.authoringSkill).toBeUndefined();
+    expect(plan.authoringSkillSource).toBeUndefined();
+  });
+
+  it("preserves a malformed --skill value for telemetry without adopting it as authoringSkill", () => {
+    writeFileSync(
+      join(projectDir, "hyperframes.json"),
+      JSON.stringify({ authoringSkill: "product-launch-video" }),
+    );
+    // Fails SKILL_SLUG (spaces, uppercase): normalizeSkillSlug rejects the shape,
+    // not a registry of known skill names.
+    const plan = createRenderPlan({ dir: projectDir, skill: "Not A Skill!" });
+    expect(plan.invalidAuthoringSkill).toBe("Not A Skill!");
+    // The invalid flag never wins attribution: the project's own config still does.
+    expect(plan.authoringSkill).toBe("product-launch-video");
+    expect(plan.authoringSkillSource).toBe("project-config");
+  });
+
+  describe("hfEnvOverrides", () => {
+    const savedEnv: Record<string, string | undefined> = {};
+    const OVERRIDE_KEYS = [
+      "HF_DE_VERIFY",
+      "HF_TEST_ENV_INT",
+      "HYPERFRAMES_ZZZ_TEST_OVERRIDE",
+      "HYPERFRAMES_AAA_TEST_OVERRIDE",
+      "HF_SHADER_WORKER_ENTRY",
+    ];
+
+    beforeEach(() => {
+      for (const key of OVERRIDE_KEYS) savedEnv[key] = process.env[key];
+    });
+
+    afterEach(() => {
+      for (const key of OVERRIDE_KEYS) {
+        if (savedEnv[key] === undefined) delete process.env[key];
+        else process.env[key] = savedEnv[key];
+      }
+    });
+
+    it("reports an array (never absent) and never includes a key this test didn't set", () => {
+      for (const key of OVERRIDE_KEYS) delete process.env[key];
+      const plan = createRenderPlan({ dir: projectDir });
+      expect(Array.isArray(plan.hfEnvOverrides)).toBe(true);
+      for (const key of OVERRIDE_KEYS) expect(plan.hfEnvOverrides).not.toContain(key);
+    });
+
+    it("reports the sorted names (never values) of set HF_/HYPERFRAMES_ env vars", () => {
+      process.env.HF_TEST_ENV_INT = "some-path-that-must-not-leak";
+      process.env.HYPERFRAMES_ZZZ_TEST_OVERRIDE = "another-secret-looking-value";
+      const plan = createRenderPlan({ dir: projectDir });
+      expect(plan.hfEnvOverrides).toContain("HF_TEST_ENV_INT");
+      expect(plan.hfEnvOverrides).toContain("HYPERFRAMES_ZZZ_TEST_OVERRIDE");
+      expect(plan.hfEnvOverrides.join(" ")).not.toContain("some-path-that-must-not-leak");
+      expect(plan.hfEnvOverrides.join(" ")).not.toContain("another-secret-looking-value");
+    });
+
+    it("sorts names rather than reporting them in process.env's insertion order", () => {
+      process.env.HYPERFRAMES_ZZZ_TEST_OVERRIDE = "1";
+      process.env.HYPERFRAMES_AAA_TEST_OVERRIDE = "1";
+      const plan = createRenderPlan({ dir: projectDir });
+      const indexOfAaa = plan.hfEnvOverrides.indexOf("HYPERFRAMES_AAA_TEST_OVERRIDE");
+      const indexOfZzz = plan.hfEnvOverrides.indexOf("HYPERFRAMES_ZZZ_TEST_OVERRIDE");
+      expect(indexOfAaa).toBeGreaterThanOrEqual(0);
+      expect(indexOfAaa).toBeLessThan(indexOfZzz);
+    });
+
+    it("never reports the CLI's own shader-worker bootstrap key as an operator override", () => {
+      // A real CLI run reaches this point with the key already set by cli.ts's bootstrap;
+      // no test in this file goes through that bootstrap, so set it here.
+      process.env.HF_SHADER_WORKER_ENTRY = "/some/dist/shaderTransitionWorker.js";
+      const plan = createRenderPlan({ dir: projectDir });
+      expect(plan.hfEnvOverrides).not.toContain("HF_SHADER_WORKER_ENTRY");
+    });
   });
 });

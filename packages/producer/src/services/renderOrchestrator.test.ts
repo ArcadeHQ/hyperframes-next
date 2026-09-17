@@ -46,6 +46,8 @@ import {
   isDeParallelRouterEnabled,
   mergeWorkerInitObservability,
   resolveCompositionElementCount,
+  detectAdaptersStatic,
+  resolveAdaptersUsed,
   resolveDeShortBand,
   shouldClampDefaultDrawElement,
   shouldPreferParallelDrawElement,
@@ -2227,12 +2229,157 @@ describe("shouldPreferSingleWorkerDrawElement (DE priority inversion)", () => {
       expect(scanElementTags(html).heygenVideoCount).toBe(1);
     });
 
-    it("reports zero (not undefined) arollVideoCount/heygenVideoCount and an empty byTag when nothing matches", () => {
+    it("counts audio/image/audio-group elements from the uncapped Map, not the capped byTag", () => {
+      // 55 distinct single-use filler tags, each ranked (tied count=1) ahead
+      // of audio/img/hf-audio-group by insertion order in a stable sort,
+      // push all three past the 50-tag cap into "other" in byTag, but the
+      // dedicated counts must still report the true number.
+      const distinctTags = Array.from({ length: 55 }, (_, i) => `hf-tag-${i}`);
+      const html =
+        distinctTags.map((t) => `<${t}></${t}>`).join("") +
+        "<audio></audio><img/><hf-audio-group></hf-audio-group>";
+      const scan = scanElementTags(html);
+      expect(scan.audioCount).toBe(1);
+      expect(scan.imageCount).toBe(1);
+      expect(scan.audioGroupCount).toBe(1);
+      expect(scan.byTag.audio).toBeUndefined();
+      expect(scan.byTag.img).toBeUndefined();
+      expect(scan.byTag["hf-audio-group"]).toBeUndefined();
+    });
+
+    it("counts data-composition-src sub-composition mounts", () => {
+      const html =
+        '<div data-composition-src="a.html" data-duration="2"></div>' +
+        '<section data-composition-src="b.html"></section><div></div>';
+      expect(scanElementTags(html).subCompositionCount).toBe(2);
+    });
+
+    it("counts data-color-grading elements and detects a LUT reference", () => {
+      const html =
+        '<img data-color-grading=\'{"lut":{"src":"a.cube","intensity":0.5}}\'>' +
+        '<video data-color-grading=\'{"exposure":0.2,"lut":null}\'></video>';
+      const scan = scanElementTags(html);
+      expect(scan.colorGradingCount).toBe(2);
+      expect(scan.hasLut).toBe(true);
+    });
+
+    it("reports hasLut false when no color-grading element references a LUT", () => {
+      const html = '<img data-color-grading=\'{"exposure":0.2,"lut":null}\'>';
+      const scan = scanElementTags(html);
+      expect(scan.colorGradingCount).toBe(1);
+      expect(scan.hasLut).toBe(false);
+    });
+
+    it("decodes the &quot;-escaped attribute form the compile pipeline actually emits", () => {
+      // linkedom's serializer re-emits this attribute &quot;-escaped on every
+      // compile round-trip, the real mainstream shape, not single-quoted.
+      const html = '<img data-color-grading="{&quot;lut&quot;:&quot;a.cube&quot;}">';
+      const scan = scanElementTags(html);
+      expect(scan.colorGradingCount).toBe(1);
+      expect(scan.hasLut).toBe(true);
+    });
+
+    // Mirrors normalizeLut (@hyperframes/core colorGrading.ts): an empty
+    // string, an object with no `src`, or a blank `src` are all "no LUT",
+    // matching the runtime consumer, not just "the key is present".
+    it("reports hasLut false for an empty-string, srcless, or blank-src lut value", () => {
+      const html =
+        '<img data-color-grading=\'{"lut":""}\'>' +
+        "<img data-color-grading='{\"lut\":{}}'>" +
+        '<img data-color-grading=\'{"lut":{"src":"  "}}\'>';
+      const scan = scanElementTags(html);
+      expect(scan.colorGradingCount).toBe(3);
+      expect(scan.hasLut).toBe(false);
+    });
+
+    it("does not crash on malformed data-color-grading JSON, counts the element, no LUT signal", () => {
+      const html = "<img data-color-grading='{not json'>";
+      const scan = scanElementTags(html);
+      expect(scan.colorGradingCount).toBe(1);
+      expect(scan.hasLut).toBe(false);
+    });
+
+    it("reports zero (not undefined) for every count and an empty byTag when nothing matches", () => {
       const scan = scanElementTags("plain text, no tags at all");
       expect(scan.arollVideoCount).toBe(0);
       expect(scan.heygenVideoCount).toBe(0);
+      expect(scan.audioCount).toBe(0);
+      expect(scan.imageCount).toBe(0);
+      expect(scan.subCompositionCount).toBe(0);
+      expect(scan.audioGroupCount).toBe(0);
+      expect(scan.colorGradingCount).toBe(0);
+      expect(scan.hasLut).toBe(false);
       expect(scan.byTag).toEqual({});
       expect(scan.total).toBe(0);
+      // Unlike the counts above, this pair reports absent (not a false/"0"
+      // default) when there's no root tag at all to compare against.
+      expect(scan.rootBodyMismatch).toBeUndefined();
+      expect(scan.rootBodyDeltaPxBucket).toBeUndefined();
+    });
+
+    describe("rootBodyMismatch / rootBodyDeltaPxBucket", () => {
+      function html(rootWidth: number, rootHeight: number, css: string): string {
+        return (
+          `<style>${css}</style>` +
+          `<body><div data-composition-id="c1" data-width="${rootWidth}" data-height="${rootHeight}"></div></body>`
+        );
+      }
+
+      it("reports no mismatch and bucket 0 when the scaffold's html/body CSS matches the root exactly", () => {
+        const scan = scanElementTags(
+          html(1080, 1920, "html, body { width: 1080px; height: 1920px; }"),
+        );
+        expect(scan.rootBodyMismatch).toBe(false);
+        expect(scan.rootBodyDeltaPxBucket).toBe("0");
+      });
+
+      it("buckets a small stale-scaffold delta as 1-10", () => {
+        const scan = scanElementTags(
+          html(1080, 1920, "html, body { width: 1085px; height: 1920px; }"),
+        );
+        expect(scan.rootBodyMismatch).toBe(true);
+        expect(scan.rootBodyDeltaPxBucket).toBe("1-10");
+      });
+
+      it("buckets a mid-size delta as 11-50", () => {
+        const scan = scanElementTags(
+          html(1080, 1920, "html, body { width: 1080px; height: 1950px; }"),
+        );
+        expect(scan.rootBodyMismatch).toBe(true);
+        expect(scan.rootBodyDeltaPxBucket).toBe("11-50");
+      });
+
+      it("buckets a landscape-scaffold-under-portrait-root delta as 51+ (the real #4001 shape)", () => {
+        const scan = scanElementTags(
+          html(1080, 1920, "html, body { width: 1920px; height: 1080px; }"),
+        );
+        expect(scan.rootBodyMismatch).toBe(true);
+        expect(scan.rootBodyDeltaPxBucket).toBe("51+");
+      });
+
+      it("reads a height-authored-before-width CSS block the same way", () => {
+        const scan = scanElementTags(
+          html(1080, 1920, "html, body { height: 1920px; width: 1080px; }"),
+        );
+        expect(scan.rootBodyMismatch).toBe(false);
+        expect(scan.rootBodyDeltaPxBucket).toBe("0");
+      });
+
+      it("reports absent, not a false default, when there is no composition root to read", () => {
+        const scan = scanElementTags(
+          "<style>html, body { width: 1080px; height: 1920px; }</style><p>no root</p>",
+        );
+        expect(scan.rootBodyMismatch).toBeUndefined();
+        expect(scan.rootBodyDeltaPxBucket).toBeUndefined();
+      });
+
+      it("reports absent, not a false default, when the scaffold has no html/body CSS block at all", () => {
+        const scan = scanElementTags(
+          '<body><div data-composition-id="c1" data-width="1080" data-height="1920"></div></body>',
+        );
+        expect(scan.rootBodyMismatch).toBeUndefined();
+        expect(scan.rootBodyDeltaPxBucket).toBeUndefined();
+      });
     });
   });
 
@@ -2262,6 +2409,12 @@ describe("shouldPreferSingleWorkerDrawElement (DE priority inversion)", () => {
         byTag: { div: 1, span: 1 },
         arollVideoCount: 0,
         heygenVideoCount: 0,
+        audioCount: 0,
+        imageCount: 0,
+        subCompositionCount: 0,
+        audioGroupCount: 0,
+        colorGradingCount: 0,
+        hasLut: false,
       });
     });
 
@@ -2273,6 +2426,12 @@ describe("shouldPreferSingleWorkerDrawElement (DE priority inversion)", () => {
         byTag: { div: 1 },
         arollVideoCount: 0,
         heygenVideoCount: 0,
+        audioCount: 0,
+        imageCount: 0,
+        subCompositionCount: 0,
+        audioGroupCount: 0,
+        colorGradingCount: 0,
+        hasLut: false,
       });
     });
 
@@ -2291,6 +2450,12 @@ describe("shouldPreferSingleWorkerDrawElement (DE priority inversion)", () => {
         byTag: { div: 1, span: 1 },
         arollVideoCount: 0,
         heygenVideoCount: 0,
+        audioCount: 0,
+        imageCount: 0,
+        subCompositionCount: 0,
+        audioGroupCount: 0,
+        colorGradingCount: 0,
+        hasLut: false,
       });
     });
 
@@ -2302,6 +2467,12 @@ describe("shouldPreferSingleWorkerDrawElement (DE priority inversion)", () => {
         byTag: { div: 1 },
         arollVideoCount: 0,
         heygenVideoCount: 0,
+        audioCount: 0,
+        imageCount: 0,
+        subCompositionCount: 0,
+        audioGroupCount: 0,
+        colorGradingCount: 0,
+        hasLut: false,
       });
     });
 
@@ -2311,6 +2482,112 @@ describe("shouldPreferSingleWorkerDrawElement (DE priority inversion)", () => {
       expect(result).not.toHaveProperty("byTag");
       expect(result).not.toHaveProperty("arollVideoCount");
       expect(result).not.toHaveProperty("heygenVideoCount");
+    });
+  });
+
+  describe("detectAdaptersStatic", () => {
+    it("returns empty for a composition using no tracked adapter", () => {
+      expect(detectAdaptersStatic("<div><span>hello</span></div>")).toEqual([]);
+    });
+
+    it("detects gsap from a timeline call, not a bare mention", () => {
+      expect(detectAdaptersStatic("<script>const gsap = 1;</script>")).toEqual([]);
+      expect(detectAdaptersStatic("<script>gsap.timeline().to('.a', {x:1});</script>")).toEqual([
+        "gsap",
+      ]);
+    });
+
+    it("detects the __hf<Name> registration token for each array-registered adapter", () => {
+      expect(detectAdaptersStatic("<script>window.__hfLottie.push(anim);</script>")).toEqual([
+        "lottie",
+      ]);
+      expect(detectAdaptersStatic("<script>window.__hfAnime.push(tl);</script>")).toEqual([
+        "animejs",
+      ]);
+      expect(detectAdaptersStatic("<script>window.__hfD3 = [t];</script>")).toEqual(["d3"]);
+      expect(detectAdaptersStatic("<script>window.__hfLeaflet.push(m);</script>")).toEqual([
+        "leaflet",
+      ]);
+      expect(detectAdaptersStatic("<script>window.__hfMapbox.push(m);</script>")).toEqual([
+        "mapbox",
+      ]);
+      expect(detectAdaptersStatic("<script>window.__hfMaplibre.push(m);</script>")).toEqual([
+        "maplibre",
+      ]);
+      expect(detectAdaptersStatic("<script>window.__hfGoogleMaps.push(m);</script>")).toEqual([
+        "google-maps",
+      ]);
+    });
+
+    it("detects three from a THREE global reference", () => {
+      expect(
+        detectAdaptersStatic("<script>const mgr = THREE.DefaultLoadingManager;</script>"),
+      ).toEqual(["three"]);
+    });
+
+    it("detects typegpu from the data-requires-webgpu authoring attribute", () => {
+      expect(
+        detectAdaptersStatic('<div data-composition-id="a" data-requires-webgpu></div>'),
+      ).toEqual(["typegpu"]);
+    });
+
+    it("detects css from an authored @keyframes rule", () => {
+      expect(detectAdaptersStatic("<style>@keyframes spin { to { opacity: 1; } }</style>")).toEqual(
+        ["css"],
+      );
+    });
+
+    it("detects waapi from an element.animate keyframe-array call", () => {
+      expect(
+        detectAdaptersStatic("<script>el.animate([{opacity:0},{opacity:1}], 500);</script>"),
+      ).toEqual(["waapi"]);
+    });
+
+    it("reports multiple adapters in KNOWN_RUNTIME_ADAPTERS order, not detection order", () => {
+      const html = "<script>gsap.timeline();window.__hfLottie.push(a);window.__hfD3=[t];</script>";
+      expect(detectAdaptersStatic(html)).toEqual(["d3", "gsap", "lottie"]);
+    });
+  });
+
+  describe("resolveAdaptersUsed", () => {
+    it("falls back to the static scan when there is no probe session", async () => {
+      const html = "<script>gsap.timeline();</script>";
+      expect(await resolveAdaptersUsed(null, html)).toEqual(["gsap"]);
+    });
+
+    it("falls back to the static scan when the probe session is not yet initialized", async () => {
+      const session = { isInitialized: false, page: { evaluate: async () => ["three"] } };
+      const html = "<script>gsap.timeline();</script>";
+      expect(await resolveAdaptersUsed(session, html)).toEqual(["gsap"]);
+    });
+
+    it("unions the live probe result with the static scan, deduped and canonically ordered", async () => {
+      const session = { isInitialized: true, page: { evaluate: async () => ["three", "lottie"] } };
+      const html = "<script>gsap.timeline();window.__hfLottie.push(a);</script>";
+      expect(await resolveAdaptersUsed(session, html)).toEqual(["gsap", "lottie", "three"]);
+    });
+
+    it("falls back to the static scan when page.evaluate throws", async () => {
+      const session = {
+        isInitialized: true,
+        page: {
+          evaluate: async () => {
+            throw new Error("Execution context was destroyed");
+          },
+        },
+      };
+      const html = "<script>gsap.timeline();</script>";
+      expect(await resolveAdaptersUsed(session, html)).toEqual(["gsap"]);
+    });
+
+    it("ignores unknown values the live probe might return", async () => {
+      const session = { isInitialized: true, page: { evaluate: async () => ["gsap", "bogus"] } };
+      expect(await resolveAdaptersUsed(session, "<div></div>")).toEqual(["gsap"]);
+    });
+
+    it("reports an empty list, not absent, when nothing is detected", async () => {
+      const session = { isInitialized: true, page: { evaluate: async () => [] } };
+      expect(await resolveAdaptersUsed(session, "<div></div>")).toEqual([]);
     });
   });
 

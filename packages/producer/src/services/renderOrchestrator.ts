@@ -50,9 +50,12 @@ import {
   type Fps,
   type FpsInput,
   fpsToNumber,
+  HF_COLOR_GRADING_ATTR,
   redactTelemetryString,
   toFps,
 } from "@hyperframes/core";
+import { HF_AUDIO_GROUP_TAG } from "@hyperframes/core/audio-groups";
+import { HTML_BODY_CSS_HEIGHT_FIRST_RE, HTML_BODY_CSS_WIDTH_FIRST_RE } from "@hyperframes/parsers";
 import {
   type EngineConfig,
   resolveConfig,
@@ -556,6 +559,18 @@ export interface RenderPerfSummary {
     arollVideoCount?: number;
     /** `<video data-media-source="heygen">` elements from the same static scan. Only set when compositionElementCountSource is "static". */
     heygenVideoCount?: number;
+    /** Runtime adapters exercised (see `KNOWN_RUNTIME_ADAPTERS`), a live+static union, always set (possibly empty). */
+    adaptersUsed?: readonly string[];
+    /** Audio/image/sub-comp/color-grading counts, same static scan; only set when the source above is "static". */
+    audioCount?: number;
+    imageCount?: number;
+    subCompositionCount?: number;
+    audioGroupCount?: number;
+    colorGradingCount?: number;
+    hasLut?: boolean;
+    /** Authored root data-width/height vs. the scaffold's html/body CSS size; absent when either is undetectable. */
+    rootBodyMismatch?: boolean;
+    rootBodyDeltaPxBucket?: "0" | "1-10" | "11-50" | "51+";
     /** Short-comp band attribution: "applied" | "skipped_elements" | "unmeasured"; unset when the frame count made the band irrelevant. */
     shortBand?: "applied" | "skipped_elements" | "unmeasured";
     /** DE parallel-router outcome: "routed" (fired, held), "reverted" (fired, self-verify retry rolled back), "none". Mutually exclusive with workerInversion. */
@@ -1446,9 +1461,55 @@ export interface ElementTagScan {
   byTag: Readonly<Record<string, number>>;
   arollVideoCount: number;
   heygenVideoCount: number;
+  audioCount: number;
+  imageCount: number;
+  subCompositionCount: number;
+  audioGroupCount: number;
+  colorGradingCount: number;
+  hasLut: boolean;
+  /** Authored root data-width/height vs. the scaffold's html/body CSS size; absent when either is undetectable. */
+  rootBodyMismatch?: boolean;
+  rootBodyDeltaPxBucket?: "0" | "1-10" | "11-50" | "51+";
 }
 
 const MAX_REPORTED_ELEMENT_TAGS = 50;
+
+/** First element carrying data-composition-id, the same root marker other `[data-composition-id]` queries here use. */
+const ROOT_COMPOSITION_TAG_RE =
+  /<[a-zA-Z][-a-zA-Z0-9]*\b[^>]*\bdata-composition-id=["'][^"']*["'][^>]*>/i;
+
+function bucketPxDelta(delta: number): NonNullable<ElementTagScan["rootBodyDeltaPxBucket"]> {
+  if (delta === 0) return "0";
+  if (delta <= 10) return "1-10";
+  if (delta <= 50) return "11-50";
+  return "51+";
+}
+
+/** Authored root size vs. the scaffold's html/body CSS size, a source-level fact this HTML
+ * string carries whether or not init.ts's runtime DOM correction ran. Undefined, not a false/"0"
+ * default, when either side can't be read; a lighter root-tag heuristic than lint's findRootTag. */
+function detectRootBodySizeMismatch(
+  html: string,
+): Pick<ElementTagScan, "rootBodyMismatch" | "rootBodyDeltaPxBucket"> {
+  const rootTag = html.match(ROOT_COMPOSITION_TAG_RE)?.[0];
+  const dataWidth = rootTag && Number(rootTag.match(/\bdata-width=["'](\d+)["']/i)?.[1]);
+  const dataHeight = rootTag && Number(rootTag.match(/\bdata-height=["'](\d+)["']/i)?.[1]);
+  if (!dataWidth || !dataHeight) return {};
+
+  // Groups 1 and 3 are prefix text for applyResolutionPreset's in-place
+  // replace; this read-only comparison only needs the digit groups (2 and 4).
+  const widthFirst = html.match(HTML_BODY_CSS_WIDTH_FIRST_RE);
+  const heightFirst = widthFirst ? undefined : html.match(HTML_BODY_CSS_HEIGHT_FIRST_RE);
+  const [cssWidth, cssHeight] = widthFirst
+    ? [Number(widthFirst[2]), Number(widthFirst[4])]
+    : heightFirst
+      ? [Number(heightFirst[4]), Number(heightFirst[2])]
+      : [undefined, undefined];
+  if (!cssWidth || !cssHeight) return {};
+
+  const delta = Math.max(Math.abs(dataWidth - cssWidth), Math.abs(dataHeight - cssHeight));
+  return { rootBodyMismatch: delta > 0, rootBodyDeltaPxBucket: bucketPxDelta(delta) };
+}
 
 /**
  * Rough element count (and per-tag breakdown) for compiled composition HTML.
@@ -1481,9 +1542,9 @@ const MAX_REPORTED_ELEMENT_TAGS = 50;
  * literal closing marker (`</`, a void name at a word boundary, or `/>`), so
  * ordinary JS comparisons and divisions don't qualify — verified by test.
  *
- * `byTag`/`arollVideoCount`/`heygenVideoCount` derive from the SAME matched set and the SAME
- * script/style-stripped markup as `total` — one scan feeds every property
- * this function returns, so none of them can drift apart from each other.
+ * Every other property derives from the SAME script/style-stripped markup as
+ * `total`, and the per-tag counts come from the SAME matched set, so one scan
+ * feeds everything this function returns and none of them can drift apart.
  *
  * FALLBACK ONLY as of the live-DOM fix below — a string scan of the SOURCE
  * markup cannot see elements a composition's own script creates at runtime
@@ -1547,7 +1608,63 @@ export function scanElementTags(html: string): ElementTagScan {
   // or value, so a plain presence check is exact, not a substring guess.
   const heygenVideoCount =
     markup.match(/<video\b[^>]*\bdata-media-source=["']heygen["'][^>]*>/gi)?.length ?? 0;
-  return { total, byTag, arollVideoCount, heygenVideoCount };
+  // Uncapped `counts` Map, not `byTag`: 50+ distinct tags could push these
+  // into the "other" bucket, zeroing a named field the cap shouldn't affect.
+  const audioCount = counts.get("audio") ?? 0;
+  const imageCount = counts.get("img") ?? 0;
+  const audioGroupCount = counts.get(HF_AUDIO_GROUP_TAG) ?? 0;
+  // Not collectSubCompositionSrcs (@hyperframes/parsers/asset-resolution):
+  // that dedupes by src and drops placeholder/remote mounts, so its length is
+  // distinct resolvable sub-comps, not this field's mount-element count.
+  const subCompositionCount =
+    markup.match(/<[a-zA-Z][-a-zA-Z0-9]*\b[^>]*\bdata-composition-src=["'][^"']*["']/gi)?.length ??
+    0;
+  let colorGradingCount = 0;
+  let hasLut = false;
+  for (const m of markup.matchAll(
+    new RegExp(`\\b${HF_COLOR_GRADING_ATTR}=(?:"([^"]*)"|'([^']*)')`, "gi"),
+  )) {
+    colorGradingCount++;
+    // Guarded, not unconditional: one LUT anywhere settles the flag, so the
+    // JSON parse stops running for every element after the first hit.
+    if (!hasLut) hasLut = colorGradingValueHasLut(m[1] ?? m[2] ?? "");
+  }
+  return {
+    total,
+    byTag,
+    arollVideoCount,
+    heygenVideoCount,
+    audioCount,
+    imageCount,
+    subCompositionCount,
+    audioGroupCount,
+    colorGradingCount,
+    hasLut,
+    ...detectRootBodySizeMismatch(html),
+  };
+}
+
+/** `data-color-grading`'s JSON `lut` field means "has a LUT" (see `HF_COLOR_GRADING_ATTR`).
+ * Decode is load-bearing: linkedom re-serializes this `&quot;`-escaped, or `JSON.parse` throws. */
+function colorGradingValueHasLut(rawAttributeValue: string): boolean {
+  const decoded = rawAttributeValue
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+  try {
+    const parsed: unknown = JSON.parse(decoded);
+    if (typeof parsed !== "object" || parsed === null || !("lut" in parsed)) return false;
+    const lut = parsed.lut;
+    // Mirrors normalizeLut (@hyperframes/core colorGrading.ts): a bare
+    // non-blank string, or an object with a non-blank string `src`, counts.
+    // null/absent/empty-string/blank-src does not.
+    if (typeof lut === "string") return lut.trim() !== "";
+    if (typeof lut !== "object" || lut === null) return false;
+    const src = (lut as { src?: unknown }).src;
+    return typeof src === "string" && src.trim() !== "";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1581,6 +1698,14 @@ export async function resolveCompositionElementCount(
   byTag?: Readonly<Record<string, number>>;
   arollVideoCount?: number;
   heygenVideoCount?: number;
+  audioCount?: number;
+  imageCount?: number;
+  subCompositionCount?: number;
+  audioGroupCount?: number;
+  colorGradingCount?: number;
+  hasLut?: boolean;
+  rootBodyMismatch?: boolean;
+  rootBodyDeltaPxBucket?: ElementTagScan["rootBodyDeltaPxBucket"];
 }> {
   if (probeSession?.isInitialized) {
     try {
@@ -1598,9 +1723,9 @@ export async function resolveCompositionElementCount(
       // render on a routing-gate measurement.
     }
   }
-  // byTag/arollVideoCount/heygenVideoCount are static-only: the live path
-  // measures a real DOM node count and never runs this string scan, so it
-  // has nothing to report.
+  // Every field below `source` is static-only: the live path measures a real
+  // DOM node count and never runs this string scan, so it has nothing to
+  // report for any of them.
   const scan = scanElementTags(html);
   return {
     count: scan.total,
@@ -1608,7 +1733,135 @@ export async function resolveCompositionElementCount(
     byTag: scan.byTag,
     arollVideoCount: scan.arollVideoCount,
     heygenVideoCount: scan.heygenVideoCount,
+    audioCount: scan.audioCount,
+    imageCount: scan.imageCount,
+    subCompositionCount: scan.subCompositionCount,
+    audioGroupCount: scan.audioGroupCount,
+    colorGradingCount: scan.colorGradingCount,
+    hasLut: scan.hasLut,
+    rootBodyMismatch: scan.rootBodyMismatch,
+    rootBodyDeltaPxBucket: scan.rootBodyDeltaPxBucket,
   };
+}
+
+/**
+ * All 12 real runtime adapters registered by `runtime/init.ts`, including the
+ * map/data-source ones (d3/leaflet/mapbox/maplibre/google-maps) alongside animation ones.
+ */
+const KNOWN_RUNTIME_ADAPTERS = [
+  "animejs",
+  "css",
+  "d3",
+  "google-maps",
+  "gsap",
+  "leaflet",
+  "lottie",
+  "mapbox",
+  "maplibre",
+  "three",
+  "typegpu",
+  "waapi",
+] as const;
+
+export type RuntimeAdapterName = (typeof KNOWN_RUNTIME_ADAPTERS)[number];
+
+/**
+ * Static, authoring-time signature per adapter. Most match the adapter's own
+ * `window.__hf<Name>` registration token; gsap/three/css/waapi match a library-specific shape.
+ */
+const ADAPTER_STATIC_SIGNATURES: Readonly<Record<RuntimeAdapterName, RegExp>> = {
+  animejs: /\b__hfAnime\b/,
+  css: /@keyframes\s+[\w-]/,
+  d3: /\b__hfD3\b/,
+  "google-maps": /\b__hfGoogleMaps\b/,
+  gsap: /\bgsap\.(timeline|to|from|fromTo|set)\s*\(/,
+  leaflet: /\b__hfLeaflet\b/,
+  lottie: /\b__hfLottie\b/,
+  mapbox: /\b__hfMapbox\b/,
+  maplibre: /\b__hfMaplibre\b/,
+  three:
+    /\bwindow\.THREE\b|\bTHREE\.(Scene|WebGLRenderer|PerspectiveCamera|DefaultLoadingManager)\b/,
+  typegpu: /\bdata-requires-webgpu\b|\b__hfTypegpuTime\b/,
+  waapi: /\.animate\s*\(\s*\[/,
+};
+
+/**
+ * Static regex fallback for `resolveAdaptersUsed`, the sole signal with no probe session.
+ * Scans inline `<script>` bodies too, unlike `scanElementTags`, which strips them.
+ */
+export function detectAdaptersStatic(html: string): RuntimeAdapterName[] {
+  return KNOWN_RUNTIME_ADAPTERS.filter((name) => ADAPTER_STATIC_SIGNATURES[name].test(html));
+}
+
+/**
+ * Live-DOM probe body for `resolveAdaptersUsed`. Self-contained since `page.evaluate` serializes it.
+ * css/waapi split verified against `runtime/adapters/css.ts` (happy-dom can't exercise it here).
+ */
+function probeAdaptersUsed(): string[] {
+  const used: string[] = [];
+  const w = window as unknown as Record<string, unknown>;
+  const isNonEmptyArray = (value: unknown): boolean => Array.isArray(value) && value.length > 0;
+  // Libraries the adapter auto-detects from their own global.
+  if (typeof w.gsap !== "undefined") used.push("gsap");
+  if (typeof w.THREE !== "undefined") used.push("three");
+  // Adapters whose authoring convention is to push each instance onto a
+  // `window.__hf<Name>` registration array.
+  if (isNonEmptyArray(w.__hfAnime)) used.push("animejs");
+  if (isNonEmptyArray(w.__hfD3)) used.push("d3");
+  if (isNonEmptyArray(w.__hfGoogleMaps)) used.push("google-maps");
+  if (isNonEmptyArray(w.__hfLeaflet)) used.push("leaflet");
+  if (isNonEmptyArray(w.__hfLottie)) used.push("lottie");
+  if (isNonEmptyArray(w.__hfMapbox)) used.push("mapbox");
+  if (isNonEmptyArray(w.__hfMaplibre)) used.push("maplibre");
+  // typegpu registers a scalar clock rather than an instance array.
+  if (
+    typeof w.__hfTypegpuTime === "number" ||
+    document.querySelector("[data-composition-id][data-requires-webgpu]")
+  ) {
+    used.push("typegpu");
+  }
+  let liveAnimations: Animation[] = [];
+  try {
+    if (typeof document.getAnimations === "function") liveAnimations = document.getAnimations();
+  } catch {
+    // Detached or mid-navigation document: leave the list empty so the
+    // adapters resolved above are still reported.
+  }
+  // The real "css" adapter only discovers @keyframes-driven animations, never
+  // CSS `transition:`. A `CSSTransition` instance is neither adapter-managed
+  // "css" nor an imperative "waapi" call, so it is excluded from both.
+  const isKeyframesCss = (animation: Animation): boolean =>
+    typeof CSSAnimation !== "undefined" && animation instanceof CSSAnimation;
+  const isTransition = (animation: Animation): boolean =>
+    typeof CSSTransition !== "undefined" && animation instanceof CSSTransition;
+  if (liveAnimations.some(isKeyframesCss)) used.push("css");
+  if (liveAnimations.some((animation) => !isKeyframesCss(animation) && !isTransition(animation))) {
+    used.push("waapi");
+  }
+  return used;
+}
+
+/**
+ * Runtime adapters a composition exercises. Unlike `resolveCompositionElementCount`
+ * (one source of truth, for gating), this is observational: unions live + static every render.
+ */
+export async function resolveAdaptersUsed(
+  probeSession: Pick<CaptureSession, "isInitialized" | "page"> | null,
+  html: string,
+): Promise<readonly RuntimeAdapterName[]> {
+  const staticAdapters = detectAdaptersStatic(html);
+  if (!probeSession?.isInitialized) return staticAdapters;
+  try {
+    const live = await probeSession.page.evaluate(probeAdaptersUsed);
+    if (!Array.isArray(live)) return staticAdapters;
+    const detected = new Set<string>([...staticAdapters, ...live]);
+    return KNOWN_RUNTIME_ADAPTERS.filter((name) => detected.has(name));
+  } catch {
+    // Probe page evaluate can fail (navigation mid-flight, detached frame,
+    // page crash), so fall back to the static-only signal rather than block
+    // the render on a purely observational telemetry probe.
+    return staticAdapters;
+  }
 }
 
 /**
@@ -3066,7 +3319,16 @@ async function executeRenderPipeline(input: {
       byTag: compositionElementTags,
       arollVideoCount,
       heygenVideoCount,
+      audioCount,
+      imageCount,
+      subCompositionCount,
+      audioGroupCount,
+      colorGradingCount,
+      hasLut,
+      rootBodyMismatch,
+      rootBodyDeltaPxBucket,
     } = await resolveCompositionElementCount(probeSession, compiled.html);
+    const adaptersUsed = await resolveAdaptersUsed(probeSession, compiled.html);
     // HF_DE_SHORT_MAX_ELEMENTS=0 is the documented kill switch (symmetric
     // with HF_DE_SHORT_MIN_FRAMES=0, which disables via the predicate's own
     // minFrames > 0 guard). Gated explicitly here too — without it, a fired
@@ -3412,6 +3674,15 @@ async function executeRenderPipeline(input: {
       compositionElementTags,
       arollVideoCount,
       heygenVideoCount,
+      adaptersUsed,
+      audioCount,
+      imageCount,
+      subCompositionCount,
+      audioGroupCount,
+      colorGradingCount,
+      hasLut,
+      rootBodyMismatch,
+      rootBodyDeltaPxBucket,
       deShortBand,
       // Same rationale as the counters above: carried on live capture
       // observability, not only the success-path perfSummary, so a crash /
@@ -4341,6 +4612,15 @@ async function executeRenderPipeline(input: {
         compositionElementTags,
         arollVideoCount,
         heygenVideoCount,
+        adaptersUsed,
+        audioCount,
+        imageCount,
+        subCompositionCount,
+        audioGroupCount,
+        colorGradingCount,
+        hasLut,
+        rootBodyMismatch,
+        rootBodyDeltaPxBucket,
         shortBand: deShortBand,
         parallelRouter: deParallelRouter,
         preRouterWorkers: deParallelRouter ? preRoutingWorkerCount : undefined,
