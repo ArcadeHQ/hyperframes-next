@@ -196,7 +196,14 @@ export function createCapturePlan(input: CreateCapturePlanInput): CapturePlan {
       forceParallelStream: false,
     });
   }
-  if (input.useStreamingEncode && input.useSegmentedCapture === true && input.workerCount === 1) {
+  // Checked before `useStreamingEncode`, which answers a question segmented
+  // capture does not ask: that flag is about ONE encoder for the whole render
+  // and so goes false for multi-worker, while a segmented render gives every
+  // worker its own. Whether streaming is viable at all is settled by the
+  // caller's predicate (`shouldSegmentCapture`) before this is ever true.
+  // forceParallelStream stays false for the same reason: the interleaved
+  // single-encoder writer has nothing to do here.
+  if (input.useSegmentedCapture === true) {
     return Object.freeze({ ...base, kind: "sdr_segmented", forceParallelStream: false });
   }
   if (input.useStreamingEncode) {

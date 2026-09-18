@@ -389,7 +389,7 @@ describe("sdr_segmented capture plan", () => {
     useSegmentedCapture: true,
   };
 
-  it("selects segmented capture only for single-worker streaming-eligible renders", () => {
+  it("selects segmented capture for streaming-eligible renders at any worker count", () => {
     const plan = createCapturePlan(segmented);
     expect(plan).toMatchObject({
       kind: "sdr_segmented",
@@ -397,11 +397,22 @@ describe("sdr_segmented capture plan", () => {
       forceParallelStream: false,
     });
     expect(Object.isFrozen(plan)).toBe(true);
-    expect(createCapturePlan({ ...segmented, workerCount: 3 }).kind).toBe("sdr_streaming");
+    // Phase 2d: several workers each own a segment and an encoder.
+    expect(createCapturePlan({ ...segmented, workerCount: 3 })).toMatchObject({
+      kind: "sdr_segmented",
+      workerCount: 3,
+      forceParallelStream: false,
+    });
   });
 
-  it("does not segment when streaming is off or the route is layered", () => {
-    expect(createCapturePlan({ ...segmented, useStreamingEncode: false }).kind).toBe("sdr_disk");
+  it("loses to the layered route but not to the single-encoder streaming flag", () => {
+    // useStreamingEncode answers "one encoder for the whole render", which a
+    // segmented render never wants — it goes false for multi-worker, and
+    // requiring it here would silently drop those renders onto the disk path.
+    // Viability is decided by shouldSegmentCapture before this is set.
+    expect(createCapturePlan({ ...segmented, useStreamingEncode: false }).kind).toBe(
+      "sdr_segmented",
+    );
     expect(createCapturePlan({ ...segmented, useLayeredComposite: true }).kind).toBe("hdr_layered");
   });
 
