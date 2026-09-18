@@ -23,6 +23,8 @@ vi.mock("./studioTelemetry", () => ({
   trackStudioEvent: vi.fn(),
 }));
 
+import { trackStudioEvent } from "./studioTelemetry";
+
 const styleOp = (property: string, value: string): PatchOperation => ({
   type: "inline-style",
   property,
@@ -200,6 +202,46 @@ describe("sdkCutoverPersist", () => {
       deps,
     );
     expect(result.status).toBe("declined");
+  });
+
+  it("tags target_not_found with resolverDisagreement when dispatch could have resolved it", async () => {
+    // getElement is canonical-only for a bare id; resolveSnapshot mirrors what
+    // dispatch resolves (bare ids anywhere). An element present under a scoped
+    // id is dispatchable, so getElement refusing it is a resolver disagreement
+    // — and one the shadow event stays silent about.
+    const deps = makeDeps();
+    const session = makeSession(false);
+    (session as unknown as { getElements: () => unknown[] }).getElements = () => [
+      { id: "hf-abc", scopedId: "host/hf-abc" },
+    ];
+    const sel = { hfId: "hf-abc" } as never;
+
+    await sdkCutoverPersist(sel, [styleOp("color", "red")], "before", "/path.html", session, deps);
+
+    expect(trackStudioEvent).toHaveBeenCalledWith(
+      "sdk_cutover_declined",
+      expect.objectContaining({ reason: "target_not_found", resolverDisagreement: true }),
+    );
+  });
+
+  it("does not tag resolverDisagreement when the element is genuinely absent", async () => {
+    const deps = makeDeps();
+    const session = makeSession(false);
+    (session as unknown as { getElements: () => unknown[] }).getElements = () => [
+      { id: "hf-other", scopedId: "hf-other" },
+    ];
+    const sel = { hfId: "hf-abc" } as never;
+    vi.mocked(trackStudioEvent).mockClear();
+
+    await sdkCutoverPersist(sel, [styleOp("color", "red")], "before", "/path.html", session, deps);
+
+    expect(trackStudioEvent).toHaveBeenLastCalledWith(
+      "sdk_cutover_declined",
+      expect.objectContaining({ reason: "target_not_found" }),
+    );
+    expect(vi.mocked(trackStudioEvent).mock.lastCall?.[1]).not.toHaveProperty(
+      "resolverDisagreement",
+    );
   });
 
   it("dispatches setStyle for inline-style ops", async () => {
