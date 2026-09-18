@@ -71,9 +71,23 @@ interface CandidateEdit {
  * Explicit fall-back to the legacy server path. Emits `sdk_cutover_declined` so
  * post-flip we can distinguish "SDK took the edit" from "SDK bowed out"; payload
  * is reason + family only (no hfId / path / content).
+ *
+ * `resolverDisagreement` is the one extra field with diagnostic value beyond the
+ * reason itself: on a `target_not_found`, the shadow's `resolveSnapshot` (what
+ * dispatch resolves) found the element that `getElement` could not. The shadow
+ * event stays silent in that case, so without this flag the case is invisible —
+ * and it is an adoption loss (a dispatchable edit refused), not a missing node.
  */
-export function declinedCutover(reason: string, family?: StudioSdkOperationFamily): CutoverResult {
-  trackStudioEvent("sdk_cutover_declined", { reason, family: family ?? null });
+export function declinedCutover(
+  reason: string,
+  family?: StudioSdkOperationFamily,
+  resolverDisagreement?: boolean,
+): CutoverResult {
+  trackStudioEvent("sdk_cutover_declined", {
+    reason,
+    family: family ?? null,
+    ...(resolverDisagreement ? { resolverDisagreement: true } : {}),
+  });
   return { status: "declined", reason };
 }
 

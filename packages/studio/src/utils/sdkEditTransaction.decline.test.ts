@@ -22,4 +22,25 @@ describe("declinedCutover telemetry", () => {
       family: null,
     });
   });
+
+  it("omits resolverDisagreement when it is not set, and carries it when it is", () => {
+    declinedCutover("target_not_found", "timing");
+    expect(trackStudioEvent).toHaveBeenLastCalledWith("sdk_cutover_declined", {
+      reason: "target_not_found",
+      family: "timing",
+    });
+
+    declinedCutover("target_not_found", "timing", true);
+    expect(trackStudioEvent).toHaveBeenLastCalledWith("sdk_cutover_declined", {
+      reason: "target_not_found",
+      family: "timing",
+      resolverDisagreement: true,
+    });
+
+    declinedCutover("target_not_found", "timing", false);
+    expect(trackStudioEvent).toHaveBeenLastCalledWith("sdk_cutover_declined", {
+      reason: "target_not_found",
+      family: "timing",
+    });
+  });
 });

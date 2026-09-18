@@ -4,8 +4,10 @@
  * sdkCutover.ts (which hit the packages/studio 600-line filesize cap) — this
  * block has no dependency on the persist/dispatch functions there.
  */
+import type { Composition } from "@hyperframes/sdk";
 import type { PatchOperation } from "./sourcePatcher";
 import { isAllowedHtmlAttribute, isSafeAttributeValue } from "./htmlAttrSafety";
+import { resolveSnapshot } from "./sdkResolverShadow";
 
 const CUTOVER_OP_TYPES = new Set<PatchOperation["type"]>([
   "inline-style",
@@ -100,6 +102,25 @@ export function shouldDeclineTextCutoverForTarget(target: unknown, ops: PatchOpe
   if (children.length > 1) return true;
   const tag = elementTag(children[0]);
   return tag !== null && NON_HTML_CHILD_TAGS.has(tag);
+}
+
+/**
+ * On a `target_not_found`, decide whether the miss is the known benign class
+ * (node genuinely absent from the session — nothing dispatch could have done)
+ * or a resolver disagreement: the shadow's broader resolver finds it, so
+ * dispatch could have made the edit and `getElement` refused it. The shadow
+ * event stays silent in that case, so this flag is the only signal for it.
+ *
+ * Diagnostic context only — it must never turn a clean decline into a throw, so
+ * a session shape without `getElements` reports "no disagreement" and the edit
+ * falls back exactly as it otherwise would have.
+ */
+export function isResolverDisagreement(session: Composition, hfId: string): boolean {
+  try {
+    return resolveSnapshot(session, hfId) !== null;
+  } catch {
+    return false;
+  }
 }
 
 export function shouldUseSdkCutover(
