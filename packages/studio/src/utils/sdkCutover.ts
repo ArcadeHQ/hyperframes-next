@@ -7,8 +7,8 @@ import { patchOpsToSdkEditOps } from "./sdkOpMapping";
 import { recordResolverParity, recordAnimationResolverParity } from "./sdkResolverShadow";
 import {
   isResolverDisagreement,
+  sdkCutoverIneligibleReason,
   shouldDeclineTextCutoverForTarget,
-  shouldUseSdkCutover,
 } from "./sdkCutoverEligibility";
 import {
   asCutoverError,
@@ -81,11 +81,14 @@ export async function sdkCutoverPersist(
   deps: CutoverDeps,
   options?: CutoverOptions,
 ): Promise<CutoverResult> {
-  if (!shouldUseSdkCutover(sdkFamilyEnabled("dom"), !!sdkSession, selection.hfId, ops))
-    return declinedCutover("ineligible_operation", "dom");
+  // Name WHICH eligibility check failed: on v0.8.47 this one string covered 26 of
+  // 30 dom declines. The two below aren't properties of the batch, so they differ.
+  if (!sdkFamilyEnabled("dom")) return declinedCutover("feature_disabled", "dom");
   if (!sdkSession) return declinedCutover("session_unavailable", "dom");
   const hfId = selection.hfId;
-  if (!hfId) return declinedCutover("target_unaddressable", "dom");
+  const ineligible = sdkCutoverIneligibleReason(hfId, ops);
+  // `!hfId` is already a reason; testing it again narrows the type for the rest.
+  if (ineligible || !hfId) return declinedCutover(ineligible ?? "target_unaddressable", "dom");
   const target = sdkSession.getElement(hfId);
   if (!target)
     return declinedCutover("target_not_found", "dom", isResolverDisagreement(sdkSession, hfId));
