@@ -35,6 +35,7 @@ Never run two of these concurrently on a dev Mac — the fleet limit is why the 
 | 2b    | kill the 2a render at ~40 %, rerun with `--resume`        | log `resuming: N segments complete` + N × `segment skipped (resume)`; output byte-identical to an uninterrupted run; the segment dir is gone afterwards unless `--keep-segments` |
 | 2c    | 2a with `HF_SEGMENT_BROWSER_RECYCLE=1`                    | `segment browser recycled (cadence)` once per segment **after the first** (5 for 6 segments), each carrying the session's `rendererRssPeakMb`; output byte-identical to the single-session render |
 | 2d    | 2a with `-w 3`                                            | `Segmented capture complete: 6 segment(s)`; output 300.000 s, 9000 frames, byte-identical to the `-w 1` segmented render |
+| 1b (R3) | PRINFRA-694 fixture below: `HF_CAPTURE_PARALLEL_STREAM=true render inflow --fps 10 -w 2` | every frame of clip B (t ≥ 10 s) has mean luma ≥ 64; `-w 2` on `hyperframes@0.8.35` must fail this check (positive control) |
 
 The Phase 0 mutation check is the same render with `PRODUCER_STREAMING_ENCODE_DURATION_CAP_ENABLED=true`: the gate line must flip to `"enabled":false,"reason":"duration_cap"` and the render must fail at the disk preflight on a host without ~75 GB free.
 
@@ -130,3 +131,75 @@ session supports it. On the 300 s fixture that is 5 m 16 s segmented vs 2 m 43 s
 streaming (both drawElement capture). Segmentation buys bounded scratch,
 resumability and blast radius, not speed; threading the worker-encode loop
 through the segmented stage is the follow-up that would close the gap.
+
+## PRINFRA-694 gate for the R3 flip
+
+R3 turns the interleaved parallel-stream router on for screenshot capture, so
+every non-first worker captures frames its session did not start at. PRINFRA-694
+was exactly that shape on the disk path: a root-level `<video>` laid out in
+normal document flow (no authored `position`) rendered solid black for its whole
+active window whenever a worker other than the first captured it. This gate
+checks the streaming route against the same fixture, with a positive control
+that proves the check detects the defect.
+
+Fixture: a 20 s root with two sequential 10 s in-flow clips at 640×360 / 10 fps.
+Clip B is flat gray (mean luma 188) so a black frame (mean luma 16) cannot be
+mistaken for content.
+
+```sh
+mkdir -p /tmp/hf-694-gate/inflow && cd /tmp/hf-694-gate/inflow
+ffmpeg -v error -y -f lavfi -i "testsrc2=size=640x360:rate=10" -f lavfi -i "sine=frequency=440:sample_rate=48000" \
+  -t 10 -c:v libx264 -preset ultrafast -crf 20 -g 10 -pix_fmt yuv420p -c:a aac -b:a 64k -movflags +faststart a.mp4
+ffmpeg -v error -y -f lavfi -i "color=c=0xC8C8C8:size=640x360:rate=10" -f lavfi -i "sine=frequency=660:sample_rate=48000" \
+  -t 10 -c:v libx264 -preset ultrafast -crf 20 -g 10 -pix_fmt yuv420p -c:a aac -b:a 64k -movflags +faststart b.mp4
+cat > index.html <<'HTML'
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}#root{position:relative;width:640px;height:360px;overflow:hidden;background:#000}video{display:block;width:100%;height:100%;object-fit:cover}</style></head><body>
+<div id="root" data-composition-id="root" data-width="640" data-height="360" data-start="0" data-duration="20" data-no-timeline>
+<video class="clip" id="a" src="a.mp4" data-start="0" data-duration="10" data-media-start="0" data-has-audio="true"></video>
+<video class="clip" id="b" src="b.mp4" data-start="10" data-duration="10" data-media-start="0" data-has-audio="true"></video>
+</div></body></html>
+HTML
+echo '{"name":"inflow","fps":10,"width":640,"height":360}' > hyperframes.json
+cd .. && HF_CAPTURE_PARALLEL_STREAM=true node <repo>/packages/cli/dist/cli.js render inflow --fps 10 -w 2 -o inflow/renders/w2-stream.mp4
+```
+
+The check is the per-frame mean luma over clip B's window:
+
+```sh
+ffprobe -v error -f lavfi -i "movie=inflow/renders/w2-stream.mp4,signalstats" \
+  -show_entries frame=pts_time:frame_tags=lavfi.signalstats.YAVG -of csv=p=0 \
+  | awk -F, '$1>=10{n++; if($2<64)b++} END{printf "clip B: %d of %d frames black\n", b, n}'
+```
+
+Measured 2026-09-18 on macOS (every worker's session logged
+`[initSession:screenshot]`, which is the R3 cohort):
+
+| Render                                                            | clip B black frames |
+| ----------------------------------------------------------------- | ------------------- |
+| this branch, `-w 1` (single-worker streaming)                     | 0 / 100             |
+| this branch, `-w 2` stock (multi-worker disk path)                | 0 / 100             |
+| this branch, `-w 2` + `HF_CAPTURE_PARALLEL_STREAM=true` (R3 route) | 0 / 100             |
+| this branch, same but `position:absolute; inset:0` on the clips   | 0 / 100             |
+| published `hyperframes@0.8.44`, `-w 2`                            | 0 / 100             |
+| `hyperframes@0.8.35` and `0.8.36`, `-w 2` (positive control)      | **99 / 100**        |
+| `hyperframes@0.8.37`, `-w 2`                                      | 0 / 100             |
+
+So the defect is real, the check catches it, and it was fixed in 0.8.37 by
+#3893 (`fix(core): un-hide a later root-level clip instead of leaving it
+display:none forever`): a root-level clip with no authored `position` was hidden
+with `display:none` while inactive and the un-hide check later disagreed with
+the hide check. The streaming route inherits that fix because it is a runtime
+fix, not a capture-path one. What this gate guards going forward is a
+regression of that runtime behaviour under the route R3 makes the default. Run
+it before flipping R3; a positive control on an old version is a one-liner:
+
+```sh
+npm install --prefix /tmp/hf835 hyperframes@0.8.35
+node /tmp/hf835/node_modules/hyperframes/bin/hyperframes.mjs render inflow --fps 10 -w 2 --quality high -o inflow/renders/r0835.mp4
+```
+
+Do not read the multi-worker `[Render:trace]` line's `"captureMode"` as the
+engine's mode on older builds: with the probe session closed before capture it
+fell back to `"beginframe"` on every platform. The `[initSession:<mode>]` log
+prefix is the per-worker truth. This branch makes the trace fall back to the
+platform rule instead.

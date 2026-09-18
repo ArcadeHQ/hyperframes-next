@@ -938,9 +938,10 @@ is now per-frame rather than whole-render, so it no longer applies.
 Multi-worker mp4/mov renders also stream where capture runs BeginFrame — Linux
 on the bundled `chrome-headless-shell`, at DPR 1, with no forced screenshot. On
 macOS and Windows, multi-worker capture is screenshot-based and still writes
-frames to disk unless you opt in with `HF_CAPTURE_PARALLEL_STREAM=true`; that
-path works but currently fails more often than the disk path, so it is not yet
-the default.
+frames to disk unless you opt in with `HF_CAPTURE_PARALLEL_STREAM=true`. That
+path now retries a stalled worker pool or a mid-stream encoder exit on a fresh
+single-worker session instead of failing the render, but it stays opt-in until
+its error rate matches the disk path's.
 
 Renders still land on the disk path when the output is `png-sequence` or `gif`,
 when HDR or shader-transition layering is in play, and when streaming is
