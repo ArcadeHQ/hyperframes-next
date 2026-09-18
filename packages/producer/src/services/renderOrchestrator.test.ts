@@ -43,6 +43,7 @@ import {
   isDeRendererStallError,
   isSequentialCaptureStallError,
   isParallelCaptureStallError,
+  fallbackCaptureModeLabel,
   isRetryableEncoderDeath,
   scanElementTags,
   envInt,
@@ -3771,5 +3772,44 @@ describe("parallel stall and encoder death: retry eligibility on default routing
     expect(
       shouldRetryViaPinnedFallback({ ...base, isEncoderDeath: true, isEncoderInterrupted: true }),
     ).toBe(false);
+  });
+});
+
+describe("fallbackCaptureModeLabel: trace label when no probe session is open", () => {
+  it("labels a non-Linux multi-worker render screenshot, not beginframe", () => {
+    expect(
+      fallbackCaptureModeLabel({
+        forceScreenshot: false,
+        useDrawElement: false,
+        platform: "darwin",
+      }),
+    ).toBe("screenshot");
+    expect(
+      fallbackCaptureModeLabel({
+        forceScreenshot: false,
+        useDrawElement: false,
+        platform: "win32",
+      }),
+    ).toBe("screenshot");
+  });
+
+  it("keeps beginframe for Linux and honours forced screenshot and drawElement", () => {
+    expect(
+      fallbackCaptureModeLabel({
+        forceScreenshot: false,
+        useDrawElement: false,
+        platform: "linux",
+      }),
+    ).toBe("beginframe");
+    expect(
+      fallbackCaptureModeLabel({ forceScreenshot: true, useDrawElement: true, platform: "linux" }),
+    ).toBe("screenshot");
+    expect(
+      fallbackCaptureModeLabel({
+        forceScreenshot: false,
+        useDrawElement: true,
+        platform: "darwin",
+      }),
+    ).toBe("drawelement");
   });
 });

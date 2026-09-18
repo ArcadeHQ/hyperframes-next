@@ -981,6 +981,23 @@ export function resolveObservedCaptureMode(
 }
 
 /**
+ * Capture-mode label for the trace checkpoints when no probe session is open
+ * (the multi-worker path closes its probe before capture starts). Falls back
+ * to the platform rule rather than assuming BeginFrame, which labelled every
+ * non-Linux multi-worker render `"beginframe"` while its workers captured via
+ * screenshot. Pure; exported for tests.
+ */
+export function fallbackCaptureModeLabel(args: {
+  forceScreenshot: boolean;
+  useDrawElement: boolean;
+  platform?: NodeJS.Platform;
+}): CaptureSession["captureMode"] {
+  if (args.forceScreenshot) return "screenshot";
+  if (args.useDrawElement) return "drawelement";
+  return resolveObservedCaptureMode(false, args.platform);
+}
+
+/**
  * Build the observability patcher, re-deriving `captureMode` on every patch.
  *
  * Extracted and exported because the previous inline closure was where the
@@ -3757,22 +3774,20 @@ async function executeRenderPipeline(input: {
       get captureMode() {
         return (
           probeSession?.captureMode ??
-          (captureForceScreenshot
-            ? "screenshot"
-            : cfg.useDrawElement
-              ? "drawelement"
-              : "beginframe")
+          fallbackCaptureModeLabel({
+            forceScreenshot: captureForceScreenshot,
+            useDrawElement: cfg.useDrawElement,
+          })
         );
       },
       get captureOperation() {
         if ((job.framesRendered ?? 0) >= totalFrames) return "encode";
         const mode =
           probeSession?.captureMode ??
-          (captureForceScreenshot
-            ? "screenshot"
-            : cfg.useDrawElement
-              ? "drawelement"
-              : "beginframe");
+          fallbackCaptureModeLabel({
+            forceScreenshot: captureForceScreenshot,
+            useDrawElement: cfg.useDrawElement,
+          });
         if (mode === "screenshot") return "captureScreenshot";
         if (mode === "drawelement") return "drawElement";
         return "beginFrame";
