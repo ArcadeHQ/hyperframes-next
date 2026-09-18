@@ -599,4 +599,171 @@ describe("runCaptureSegmentedStage", () => {
     // Exactly one retry: initial session + one recycle, not a loop.
     expect(next).toBe(2);
   });
+
+  it("distributes 7 segments over 3 workers, each frame once, concat in index order", async () => {
+    const perWorkerSessions = new Map<number, number>();
+    const sessionFactoryForWorker = (workerId: number) => ({
+      create: async () => {
+        perWorkerSessions.set(workerId, (perWorkerSessions.get(workerId) ?? 0) + 1);
+        return fakeSession(workerId);
+      },
+    });
+    const captured: number[] = [];
+    const captureFrame = mock(async (_s: unknown, i: number) => {
+      captured.push(i);
+      // Yield so the workers actually interleave rather than running serially.
+      await new Promise((r) => setTimeout(r, 1));
+      return { buffer: Buffer.alloc(1) };
+    });
+    const concat = mock(async () => ({ success: true as const }));
+    const stableDir = join(fixtureRoot, "workers");
+
+    const result = await runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 20 }),
+      probeSession: null,
+      segmentFrames: 3,
+      segmentDir: stableDir,
+      workerCount: 3,
+      sessionFactoryForWorker,
+      deps: {
+        spawnEncoder: mock(async () => okEncoder()),
+        captureFrame,
+        concat,
+        closeSession: mock(async () => {}),
+        removeFile: () => {},
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error("unreachable");
+    expect(result.workerCount).toBe(3);
+    expect(result.segments).toBe(7);
+    // Every frame exactly once across all workers, none duplicated.
+    expect([...captured].sort((a, b) => a - b)).toEqual(Array.from({ length: 20 }, (_, i) => i));
+    expect(new Set(captured).size).toBe(20);
+    expect(perWorkerSessions.size).toBe(3);
+    const concatInputs = concat.mock.calls[0]?.[0];
+    expect(concatInputs).toEqual(
+      Array.from({ length: 7 }, (_, i) => segmentOutputPath(stableDir, i)),
+    );
+  });
+
+  it("closes every worker session when one worker fails hard", async () => {
+    const closed: number[] = [];
+    let id = 0;
+    const result = runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 9 }),
+      probeSession: null,
+      segmentFrames: 3,
+      segmentDir: join(fixtureRoot, "workerfail"),
+      workerCount: 3,
+      sessionFactoryForWorker: () => ({ create: async () => fakeSession(id++) }),
+      deps: {
+        spawnEncoder: mock(async () => okEncoder()),
+        captureFrame: mock(async (_s: unknown, i: number) => {
+          if (i === 4) throw new Error("media_start_out_of_range");
+          return { buffer: Buffer.alloc(1) };
+        }),
+        concat: mock(async () => ({ success: true as const })),
+        closeSession: mock(async (s: { id: number }) => {
+          closed.push(s.id);
+        }),
+        removeFile: () => {},
+      },
+    });
+    await expect(result).rejects.toThrow(/media_start_out_of_range/);
+    // A leaked Chrome per worker is the failure mode this guards.
+    expect(closed.length).toBe(3);
+  });
+
+  it("does not fall back to streaming when several workers are in flight", async () => {
+    // Only the first segment's encoder fails; the others spawn fine. With one
+    // worker that is the documented fallback, but here other workers are
+    // already encoding, so discarding the render would throw away their work.
+    let id = 0;
+    let spawns = 0;
+    await expect(
+      runCaptureSegmentedStage({
+        ...fakeStageInput({ totalFrames: 9 }),
+        probeSession: null,
+        segmentFrames: 3,
+        segmentDir: join(fixtureRoot, "nofallback"),
+        workerCount: 3,
+        sessionFactoryForWorker: () => ({ create: async () => fakeSession(id++) }),
+        deps: {
+          spawnEncoder: mock(async () => {
+            if (spawns++ === 0) throw new Error("ffmpeg missing");
+            return okEncoder();
+          }),
+          captureFrame: mock(async () => ({ buffer: Buffer.alloc(1) })),
+          concat: mock(async () => ({ success: true as const })),
+          closeSession: mock(async () => {}),
+          removeFile: () => {},
+        },
+      }),
+    ).rejects.toThrow(/ffmpeg missing/);
+  });
+
+  it("still falls back when a single worker cannot spawn its first encoder", async () => {
+    let id = 0;
+    let spawns = 0;
+    const result = await runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 9 }),
+      probeSession: null,
+      segmentFrames: 3,
+      segmentDir: join(fixtureRoot, "singlefallback"),
+      workerCount: 1,
+      sessionFactoryForWorker: () => ({ create: async () => fakeSession(id++) }),
+      deps: {
+        spawnEncoder: mock(async () => {
+          if (spawns++ === 0) throw new Error("ffmpeg missing");
+          return okEncoder();
+        }),
+        captureFrame: mock(async () => ({ buffer: Buffer.alloc(1) })),
+        concat: mock(async () => ({ success: true as const })),
+        closeSession: mock(async () => {}),
+        removeFile: () => {},
+      },
+    });
+    expect(result).toEqual({ success: false });
+  });
+
+  it("lets every worker stop before closing any session", async () => {
+    // Closing a session out from under a worker that is still capturing
+    // orphans its ffmpeg and races the CDP connection, so the stage waits for
+    // all of them to settle even though one has already failed.
+    let id = 0;
+    let closedAny = false;
+    let capturedAfterClose = 0;
+    await expect(
+      runCaptureSegmentedStage({
+        ...fakeStageInput({ totalFrames: 9 }),
+        probeSession: null,
+        segmentFrames: 3,
+        segmentDir: join(fixtureRoot, "settle"),
+        workerCount: 3,
+        sessionFactoryForWorker: () => ({ create: async () => fakeSession(id++) }),
+        deps: {
+          spawnEncoder: mock(async () => okEncoder()),
+          captureFrame: mock(async (_s: unknown, i: number) => {
+            if (closedAny) capturedAfterClose += 1;
+            // Segment 0's first frame fails immediately; the other workers are
+            // mid-flight on slow frames when it does.
+            if (i === 0) throw new Error("media_start_out_of_range");
+            await new Promise((r) => setTimeout(r, 5));
+            return { buffer: Buffer.alloc(1) };
+          }),
+          concat: mock(async () => ({ success: true as const })),
+          closeSession: mock(async () => {
+            closedAny = true;
+          }),
+          removeFile: () => {},
+        },
+      }),
+    ).rejects.toThrow(/media_start_out_of_range/);
+    // Give any worker the stage abandoned time to resume and capture again;
+    // without the wait this assertion passes before they would have.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(capturedAfterClose).toBe(0);
+  });
 });
