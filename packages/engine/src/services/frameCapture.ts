@@ -3890,6 +3890,33 @@ export function classifyChromeProcesses(
   return browserPid === undefined ? { renderers, gpu } : { browser: browserPid, renderers, gpu };
 }
 
+/** The slice of a CDP session `readChromePids` needs. */
+interface ProcessInfoCdpSession {
+  send(method: "SystemInfo.getProcessInfo"): Promise<{
+    processInfo: readonly CdpProcessInfoRow[];
+  }>;
+  detach(): Promise<void>;
+}
+
+/**
+ * Chrome pids for one browser. `SystemInfo.getProcessInfo` is served ONLY by
+ * the browser target — a page-target session rejects with "is only supported
+ * on the browser target", which the sampler would swallow into a permanently
+ * empty reading. Hence the explicit browser-session factory.
+ */
+export async function readChromePids(
+  browserPid: number | undefined,
+  createBrowserCdpSession: () => Promise<ProcessInfoCdpSession>,
+): Promise<ChromePids> {
+  const cdp = await createBrowserCdpSession();
+  try {
+    const info = await cdp.send("SystemInfo.getProcessInfo");
+    return classifyChromeProcesses(browserPid, info.processInfo);
+  } finally {
+    await cdp.detach().catch(() => {});
+  }
+}
+
 const CHROME_MEMORY_SAMPLE_MS_DEFAULT = 2_000;
 
 function resolveChromeMemorySampleMs(): number {
@@ -3905,16 +3932,10 @@ function startChromeMemorySampler(session: CaptureSession): void {
     intervalMs: resolveChromeMemorySampleMs(),
     onSample: session.options.onMemorySample,
     sampleRss: (pids) => sampleProcessRss(pids),
-    getPids: async () => {
-      const browserPid = session.browser.process()?.pid;
-      const cdp = await session.page.createCDPSession();
-      try {
-        const info = await cdp.send("SystemInfo.getProcessInfo");
-        return classifyChromeProcesses(browserPid, info.processInfo);
-      } finally {
-        await cdp.detach().catch(() => {});
-      }
-    },
+    getPids: () =>
+      readChromePids(session.browser.process()?.pid, () =>
+        session.browser.target().createCDPSession(),
+      ),
   });
   session.chromeMemory = sampler;
   sampler.start();
