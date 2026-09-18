@@ -935,15 +935,23 @@ minute at 1080p30. Streaming is the default for single-worker mp4/mov renders
 **at any duration**: the old four-minute ceiling guarded an FFmpeg timeout that
 is now per-frame rather than whole-render, so it no longer applies.
 
+Multi-worker mp4/mov renders also stream where capture runs BeginFrame — Linux
+on the bundled `chrome-headless-shell`, at DPR 1, with no forced screenshot. On
+macOS and Windows, multi-worker capture is screenshot-based and still writes
+frames to disk unless you opt in with `HF_CAPTURE_PARALLEL_STREAM=true`; that
+path works but currently fails more often than the disk path, so it is not yet
+the default.
+
 Renders still land on the disk path when the output is `png-sequence` or `gif`,
-when HDR or shader-transition layering is in play, with more than one worker, or
-when streaming is switched off. If a render fails preflight asking for tens of
-GB of temporary frame storage, the message names which of those applied; the
-usual fixes are `--workers 1`, `--low-memory-mode`, or freeing disk.
+when HDR or shader-transition layering is in play, and when streaming is
+switched off. If a render fails preflight asking for tens of GB of temporary
+frame storage, the message names which of those applied; the usual fixes are
+`--workers 1`, `--low-memory-mode`, or freeing disk.
 
 | Environment variable                             | Default | Effect                                                                                  |
 | ------------------------------------------------ | ------- | ----------------------------------------------------------------------------------------- |
 | `PRODUCER_ENABLE_STREAMING_ENCODE`               | `true`  | `false` sends every render to the disk path                                             |
+| `HF_CAPTURE_PARALLEL_STREAM`                     | on for BeginFrame | `true` also streams multi-worker screenshot capture; `false` disables the router entirely |
 | `PRODUCER_STREAMING_ENCODE_DURATION_CAP_ENABLED` | `false` | `true` restores the duration ceiling below                                              |
 | `PRODUCER_STREAMING_ENCODE_MAX_DURATION_SECONDS` | `240`   | The ceiling's value; inert unless the flag above is `true`, including the `0` ("never") setting |
 
