@@ -3,6 +3,7 @@ import type { EditHistoryKind } from "./editHistory";
 import { hashContent, markSelfWrite } from "../hooks/sdkSelfWriteRegistry";
 import { trackStudioEvent } from "./studioTelemetry";
 import { serializeStudioFileMutation } from "./studioFileMutationCoordinator";
+import type { StudioSdkOperationFamily } from "./sdkCutoverPolicy";
 
 export type CutoverResult =
   | { status: "declined"; reason: string }
@@ -66,7 +67,13 @@ interface CandidateEdit {
   after: string;
 }
 
-export function declinedCutover(reason: string): CutoverResult {
+/**
+ * Explicit fall-back to the legacy server path. Emits `sdk_cutover_declined` so
+ * post-flip we can distinguish "SDK took the edit" from "SDK bowed out"; payload
+ * is reason + family only (no hfId / path / content).
+ */
+export function declinedCutover(reason: string, family?: StudioSdkOperationFamily): CutoverResult {
+  trackStudioEvent("sdk_cutover_declined", { reason, family: family ?? null });
   return { status: "declined", reason };
 }
 
