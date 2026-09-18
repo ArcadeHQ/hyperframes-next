@@ -203,3 +203,44 @@ engine's mode on older builds: with the probe session closed before capture it
 fell back to `"beginframe"` on every platform. The `[initSession:<mode>]` log
 prefix is the per-worker truth. This branch makes the trace fall back to the
 platform rule instead.
+
+## Fault-injection checks for the R3 hardening
+
+Unit tests pin each guard; these four renders exercise the retry paths for real.
+Fixture: the 60 s `a-single` (`DUR=60 node gen.mjs` in a scratch dir that holds
+`assets/long.mp4`), 1800 frames at 1080p30, `-w 2`, one render at a time. `$RPID`
+is the render's node pid; its direct children are one `ffmpeg` and one
+`chrome-headless-shell` per worker.
+
+```sh
+HF_CAPTURE_PARALLEL_STREAM=true node <repo>/packages/cli/dist/cli.js render a-single --fps 30 -w 2 --quality draft -o a-single/renders/out.mp4 > out.log 2>&1 & RPID=$!
+until grep -q '"phase":"capture_streaming","status":"start"' out.log; do sleep 1; done; sleep 12
+kill -9 "$(pgrep -P $RPID -x ffmpeg | head -1)"                 # A: encoder death
+kill -9 "$(pgrep -P $RPID -x chrome-headless-shell | head -1)"  # B: worker death
+kill -STOP "$(pgrep -P $RPID -x chrome-headless-shell | head -1)"  # D: frozen worker (run with HF_DE_STALL_MS=5000)
+wait $RPID; ffprobe -v error -count_frames -select_streams v -show_entries stream=nb_read_frames -of csv=p=0 a-single/renders/out.mp4
+```
+
+Measured 2026-09-18 on macOS (screenshot capture on every worker):
+
+| Case | Injected at | What the log shows | Retry | Output |
+| --- | --- | --- | --- | --- |
+| A `kill -9` ffmpeg, `HF_CAPTURE_PARALLEL_STREAM=true` | frame ~376 | `Streaming encoder exited before frame 376 was written: [FFmpeg] …` with ffmpeg's stderr, then `streaming encoder died mid-render; retrying` | 1 worker, forceScreenshot | 1800 frames, 60.000 s |
+| B `kill -9` one worker's Chrome, same route | +12 s | `Protocol error (Page.captureScreenshot): Target closed` surfaced **0.9 s** after the kill; no "stalled" anywhere | 1 worker | 1800 frames |
+| C `kill -9` one worker's Chrome, `HF_DE_PARALLEL_STREAM=true` (manual opt-in) | +12 s | gate `parallel_forced`, 2 workers interleaved; `Target closed` within a second | **1 worker** (was N before the plan carried the opt-in) | 1800 frames |
+| D `kill -STOP` one worker's Chrome, `HF_DE_STALL_MS=5000` | +12 s | `Parallel screenshot capture stalled: no frame progress for 5000ms (stuck at 336/1800)` — typed, labelled screenshot, not "drawElement" | 1 worker | 1800 frames |
+
+Before this branch, A hard-failed with a bare `write EPIPE`, B and C waited out the
+60 s watchdog and hard-failed as a "drawElement" stall, and D hard-failed with no
+retry.
+
+**Caveat on D.** The watchdog aborts the pool's signal and the writer at the
+stall window, but the stage waits for the pool to settle before it throws, and a
+`SIGSTOP`-frozen renderer cannot observe the abort: its in-flight CDP call only
+returns at the protocol timeout or when the process dies. In this run the retry
+started ~90 s later, when the frozen process was killed by hand. A worker that is
+slow rather than frozen (the field "stuck at 0/N" shape: browsers still
+initialising) observes the abort between steps and the retry starts at the
+window. Closing the frozen case means force-killing worker browsers on stall in
+the engine's abort path; not done.
+
