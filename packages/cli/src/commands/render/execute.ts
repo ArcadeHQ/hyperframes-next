@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import type { CanvasResolution, OutputResolutionIssueKind } from "@hyperframes/core";
 import { c } from "../../ui/colors.js";
 import { errorBox, formatBytes } from "../../ui/format.js";
-import { formatLintFindings } from "../../utils/lintFormat.js";
+import { formatLintStartupMessage } from "../../utils/lintFormat.js";
 import {
   hasDefinitiveEntryMismatch,
   lintProject,
@@ -53,9 +53,10 @@ function renderLintShouldAbort(
   strictErrors: boolean,
   strictAll: boolean,
   lintResult: ProjectLintResult,
+  definitiveEntryMismatch: boolean,
 ): boolean {
   return (
-    hasDefinitiveEntryMismatch(lintResult) ||
+    definitiveEntryMismatch ||
     shouldBlockRender(strictErrors, strictAll, lintResult.totalErrors, lintResult.totalWarnings)
   );
 }
@@ -218,9 +219,15 @@ export async function runRenderLint(
       ? await runRenderLintInOwnedProcess(plan.project.dir, explicitEntry, signal)
       : await runLint(plan.project.dir, explicitEntry);
   if (lintResult.totalErrors === 0 && lintResult.totalWarnings === 0) return;
-  presentRenderLintFindings(lintResult, plan.effectiveQuiet);
   const definitiveEntryMismatch = hasDefinitiveEntryMismatch(lintResult);
-  if (renderLintShouldAbort(plan.strictErrors, plan.strictAll, lintResult)) {
+  const willAbort = renderLintShouldAbort(
+    plan.strictErrors,
+    plan.strictAll,
+    lintResult,
+    definitiveEntryMismatch,
+  );
+  presentRenderLintFindings(lintResult, plan.effectiveQuiet, plan.lintVerbose || willAbort);
+  if (willAbort) {
     presentRenderLintAbort(plan, definitiveEntryMismatch);
     failCommand();
   }
@@ -245,10 +252,15 @@ async function runRenderLintInOwnedProcess(
 function presentRenderLintFindings(
   lintResult: Awaited<ReturnType<typeof lintProject>>,
   quiet: boolean,
+  lintVerbose: boolean,
 ): void {
   if (quiet) return;
   console.log("");
-  for (const line of formatLintFindings(lintResult, { errorsFirst: true })) console.log(line);
+  for (const line of formatLintStartupMessage(
+    lintResult,
+    lintVerbose ? { kind: "verbose", options: { errorsFirst: true } } : { kind: "summary" },
+  ))
+    console.log(line);
 }
 
 function presentRenderLintAbort(plan: RenderPlan, definitiveEntryMismatch: boolean): void {
