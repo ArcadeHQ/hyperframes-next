@@ -95,7 +95,7 @@ import type { SdrStreamingCapturePlan } from "../capturePlan.js";
 const DEFAULT_CAPTURE_STALL_MS = 60_000;
 const DE_STALL_POLL_MS = 5_000;
 
-function resolveCaptureStallTimeoutMs(): number {
+export function resolveCaptureStallTimeoutMs(): number {
   // HF_DE_PARALLEL_STALL_MS is the pre-rename name (this config used to guard
   // only the parallel path). Bridged for one release so an already-deployed
   // ops surface (runbook, ConfigMap, ...) tuning the old name doesn't
@@ -145,7 +145,7 @@ class SequentialCaptureStallError extends Error {
   }
 }
 
-function raceAgainstStall<T>(
+export function raceAgainstStall<T>(
   promise: Promise<T>,
   deadlineMs: number,
   input: {
