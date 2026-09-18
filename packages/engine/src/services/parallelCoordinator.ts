@@ -1008,6 +1008,43 @@ export interface ParallelCaptureHooks {
   onWorkerFailure?: (failure: CaptureFailure) => void;
 }
 
+/**
+ * The pool's single failure gate. Both halves of the contract the streaming
+ * stage relies on live here so they can be pinned without a browser: the
+ * first pool-fatal failure reaches `hooks.onWorkerFailure` with the ORIGINAL
+ * `CaptureFailure` before the peers are aborted, and a hook that throws cannot
+ * skip that abort (the pool still rejects with its own classified failure,
+ * not the hook's error). Later failures are ignored: the first one owns the
+ * abort reason. `onFailure` runs synchronously at the tail of a worker's
+ * catch, before that worker's promise settles, so the hook always precedes
+ * the pool's rejection. Exported for tests.
+ */
+export function createPoolFailureHandler(args: {
+  streaming: boolean;
+  peerController: AbortController;
+  hooks?: ParallelCaptureHooks;
+}): {
+  onFailure: (failure: CaptureFailure) => void;
+  firstFatalFailure: () => CaptureFailure | undefined;
+} {
+  let firstFatalFailure: CaptureFailure | undefined;
+  return {
+    firstFatalFailure: () => firstFatalFailure,
+    onFailure: (failure) => {
+      if (firstFatalFailure || !isPoolFatalWorkerFailure(failure, args.streaming)) return;
+      firstFatalFailure = failure;
+      try {
+        args.hooks?.onWorkerFailure?.(failure);
+      } catch {
+        // A caller-supplied hook must not be able to disable the pool abort;
+        // the worker's classified failure is what the pool reports.
+      } finally {
+        args.peerController.abort(failure);
+      }
+    },
+  };
+}
+
 export async function executeParallelCapture(
   serverUrl: string,
   workDir: string,
@@ -1074,13 +1111,12 @@ export async function executeParallelCapture(
   const workerSignal = signal
     ? AbortSignal.any([signal, peerController.signal])
     : peerController.signal;
-  let firstFatalFailure: CaptureFailure | undefined;
-  const onFailure = (failure: CaptureFailure): void => {
-    if (firstFatalFailure || !isPoolFatalWorkerFailure(failure, Boolean(onFrameBuffer))) return;
-    firstFatalFailure = failure;
-    hooks?.onWorkerFailure?.(failure);
-    peerController.abort(failure);
-  };
+  const failureHandler = createPoolFailureHandler({
+    streaming: Boolean(onFrameBuffer),
+    peerController,
+    hooks,
+  });
+  const onFailure = failureHandler.onFailure;
   const results = await Promise.all(
     tasks.map((task) =>
       executeWorkerTask(
@@ -1104,7 +1140,8 @@ export async function executeParallelCapture(
   const errors = results.filter((r) => r.failure || r.error);
   if (errors.length > 0) {
     const errorMessages = errors.map(formatWorkerFailure).join("; ");
-    const representative = firstFatalFailure ?? errors.find((result) => result.failure)?.failure;
+    const representative =
+      failureHandler.firstFatalFailure() ?? errors.find((result) => result.failure)?.failure;
     const workerDiagnostics = errors.flatMap((result) => result.failure?.workerDiagnostics ?? []);
     throw new CaptureFailure({
       kind: representative?.kind ?? "io",

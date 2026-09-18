@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   calculateOptimalWorkers,
   computeWorkerSizing,
+  createPoolFailureHandler,
   distributeFrames,
   expectedFramesForTask,
   flagSilentWorkerExits,
@@ -534,5 +535,77 @@ describe("isPoolFatalWorkerFailure", () => {
     expect(isPoolFatalWorkerFailure(failure("authoring"), true)).toBe(true);
     // Cancelled means the pool is already aborting: nothing to propagate.
     expect(isPoolFatalWorkerFailure(failure("cancelled"), true)).toBe(false);
+  });
+});
+
+describe("createPoolFailureHandler", () => {
+  const fatal = () => new CaptureFailure({ kind: "transient_browser", message: "Target closed" });
+
+  it("delivers the original failure to the hook before the peers are aborted", () => {
+    const peerController = new AbortController();
+    const seen: Array<{ failure: CaptureFailure; abortedYet: boolean }> = [];
+    const handler = createPoolFailureHandler({
+      streaming: true,
+      peerController,
+      hooks: {
+        onWorkerFailure: (failure) =>
+          seen.push({ failure, abortedYet: peerController.signal.aborted }),
+      },
+    });
+    const failure = fatal();
+    handler.onFailure(failure);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.failure).toBe(failure);
+    expect(seen[0]?.abortedYet).toBe(false);
+    expect(peerController.signal.aborted).toBe(true);
+    expect(peerController.signal.reason).toBe(failure);
+    expect(handler.firstFatalFailure()).toBe(failure);
+  });
+
+  it("still aborts the peers when the hook throws, and keeps the classified failure", () => {
+    const peerController = new AbortController();
+    const handler = createPoolFailureHandler({
+      streaming: true,
+      peerController,
+      hooks: {
+        onWorkerFailure: () => {
+          throw new Error("hook exploded");
+        },
+      },
+    });
+    const failure = fatal();
+    expect(() => handler.onFailure(failure)).not.toThrow();
+    expect(peerController.signal.aborted).toBe(true);
+    expect(peerController.signal.reason).toBe(failure);
+    expect(handler.firstFatalFailure()).toBe(failure);
+  });
+
+  it("ignores every failure after the first, which owns the abort reason", () => {
+    const peerController = new AbortController();
+    const hook = vi.fn();
+    const handler = createPoolFailureHandler({
+      streaming: true,
+      peerController,
+      hooks: { onWorkerFailure: hook },
+    });
+    const first = fatal();
+    handler.onFailure(first);
+    handler.onFailure(fatal());
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(peerController.signal.reason).toBe(first);
+  });
+
+  it("leaves the peers running for a cancellation on the streaming path", () => {
+    const peerController = new AbortController();
+    const hook = vi.fn();
+    const handler = createPoolFailureHandler({
+      streaming: true,
+      peerController,
+      hooks: { onWorkerFailure: hook },
+    });
+    handler.onFailure(new CaptureFailure({ kind: "cancelled", message: "aborted" }));
+    expect(hook).not.toHaveBeenCalled();
+    expect(peerController.signal.aborted).toBe(false);
+    expect(handler.firstFatalFailure()).toBeUndefined();
   });
 });
