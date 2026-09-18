@@ -1528,7 +1528,7 @@ export function formatConsoleDiagnostic(
   return { text: `${prefix} ${text}`, suppressHostLog: false };
 }
 
-const HF_READY_DIAGNOSTIC_EXPR = `(function() {
+export const HF_READY_DIAGNOSTIC_EXPR = `(async function() {
   var hf = window.__hf;
   var player = window.__player;
   var renderReady = !!window.__renderReady;
@@ -1537,6 +1537,26 @@ const HF_READY_DIAGNOSTIC_EXPR = `(function() {
   var hasTimeline = !!(window.__timelines && Object.keys(window.__timelines).length > 0);
   var root = document.querySelector("[data-composition-id]");
   var declaredDuration = root ? Number(root.getAttribute("data-duration")) : -1;
+  var registry = (window.__hf && window.__hf.buildReady) || {};
+  var keys = Object.keys(registry);
+  // A microtask race mis-sorts a non-native thenable (extra adoption tick)
+  // and rejects the whole expression on a rejected entry. Settling each
+  // key onto its own record and waiting one macrotask avoids both.
+  var settled = {};
+  if (keys.length > 0) {
+    keys.forEach(function(key) {
+      Promise.resolve(registry[key]).then(
+        function() { settled[key] = "resolved"; },
+        function() { settled[key] = "rejected"; },
+      );
+    });
+    await new Promise(function(r) { setTimeout(r, 0); });
+  }
+  // A thenable resolving via its own setTimeout(0) can still misreport as
+  // pending here (macrotask registration order, not resolution order) — a
+  // narrow case that self-corrects on the next ~1s diagnostic tick.
+  var pendingBuildReadyKeys = keys.filter(function(key) { return !settled[key]; });
+  var rejectedBuildReadyKeys = keys.filter(function(key) { return settled[key] === "rejected"; });
   return {
     renderReady: renderReady,
     hasHf: !!hf,
@@ -1545,11 +1565,12 @@ const HF_READY_DIAGNOSTIC_EXPR = `(function() {
     duration: duration,
     hasTimeline: hasTimeline,
     declaredDuration: declaredDuration,
+    pendingBuildReadyKeys: pendingBuildReadyKeys,
+    rejectedBuildReadyKeys: rejectedBuildReadyKeys,
   };
 })()`;
 
-// fallow-ignore-next-line complexity
-function buildZeroDurationDiagnostic(diag: {
+export interface HfDiagnostic {
   renderReady: boolean;
   hasHf: boolean;
   hasSeek: boolean;
@@ -1557,8 +1578,26 @@ function buildZeroDurationDiagnostic(diag: {
   duration: number;
   hasTimeline: boolean;
   declaredDuration: number;
-}): string {
+  pendingBuildReadyKeys: string[];
+  rejectedBuildReadyKeys: string[];
+}
+
+// fallow-ignore-next-line complexity
+export function buildZeroDurationDiagnostic(diag: HfDiagnostic): string {
   const hints: string[] = [];
+  if (diag.pendingBuildReadyKeys.length > 0) {
+    hints.push(
+      `window.__hf.buildReady never resolved for: ${diag.pendingBuildReadyKeys.join(", ")}. ` +
+        "The runtime holds render-ready until every registered buildReady promise settles — " +
+        "find where the composition registers that key and confirm it actually resolves.",
+    );
+  }
+  if (diag.rejectedBuildReadyKeys.length > 0) {
+    hints.push(
+      `window.__hf.buildReady rejected for: ${diag.rejectedBuildReadyKeys.join(", ")}. ` +
+        "That key's build promise failed rather than hanging — find why it rejects.",
+    );
+  }
   if (!diag.hasPlayer) {
     hints.push("window.__player was never set — the HyperFrames runtime did not initialize.");
   }
@@ -1587,16 +1626,6 @@ function buildZeroDurationDiagnostic(diag: {
     `data-duration: ${diag.declaredDuration > 0 ? diag.declaredDuration + "s" : "not set"}\n` +
     (hints.length > 0 ? hints.map((h) => `  → ${h}`).join("\n") : "")
   );
-}
-
-interface HfDiagnostic {
-  renderReady: boolean;
-  hasHf: boolean;
-  hasSeek: boolean;
-  hasPlayer: boolean;
-  duration: number;
-  hasTimeline: boolean;
-  declaredDuration: number;
 }
 
 async function evaluateHfDiagnostic(page: Page): Promise<HfDiagnostic> {

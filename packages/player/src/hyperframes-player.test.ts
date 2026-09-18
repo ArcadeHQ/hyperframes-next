@@ -12,6 +12,15 @@ function stubIframeContentDocument(iframe: HTMLIFrameElement, doc: Document): vo
   });
 }
 
+// Bare test docs never run a runtime, so only paintAndIdleReadinessInput
+// is ever pending — drain real rAF frames past its quiet-frame minimum
+// on the given window (the iframe's own, not the test's global one).
+async function awaitPaintAndIdle(win: Window = window): Promise<void> {
+  for (let i = 0; i < 6; i++) {
+    await new Promise<void>((resolve) => win.requestAnimationFrame(() => resolve()));
+  }
+}
+
 function createForeignFrameMediaDocument(): {
   doc: Document;
   video: HTMLMediaElement & { pause: ReturnType<typeof vi.fn> };
@@ -2196,11 +2205,22 @@ describe("HyperframesPlayer runtime ready handshake", () => {
     expect(readyEvents).toEqual([{ duration: 4 }]);
   });
 
-  it("honors autoplay after cross-origin runtime timeline readiness", () => {
+  it("honors autoplay after cross-origin runtime timeline readiness", async () => {
+    // A bare iframe fires its own async `load` a few ms after append, which
+    // resets pending-play state (see createConnectedPlayer's comment below) —
+    // await it first so it can't land mid-test during the readiness wait.
+    await new Promise<void>((resolve) => {
+      player.iframe.addEventListener("load", () => resolve(), { once: true });
+    });
     player.setAttribute("autoplay", "");
     postSpy.mockClear();
 
     player._onMessage(timelineMessage(120));
+    // The same-origin doc under test has no pending media, but play() is now
+    // gated on paint-and-idle too — it queues until that settles. The gate
+    // polls the real (unstubbed) iframe document's own window, not the
+    // stubbed contentWindow used for postMessage.
+    await awaitPaintAndIdle(player.iframe.contentDocument!.defaultView!);
 
     expect(player.paused).toBe(false);
     expect(findControlCalls("play")).toHaveLength(1);
@@ -2774,6 +2794,7 @@ describe("HyperframesPlayer asset-ready gate", () => {
     play(): void;
     pause(): void;
     seek(timeInSeconds: number): void;
+    shaderLoader: { showAssetsLoading(): void };
   };
 
   beforeEach(async () => {
@@ -2813,6 +2834,25 @@ describe("HyperframesPlayer asset-ready gate", () => {
     player.remove();
   });
 
+  it("debounces the loading overlay so a fast, nothing-pending wait never shows it", async () => {
+    const player = await createConnectedPlayer();
+    const doc = player.iframe.contentDocument!;
+    const showSpy = vi.spyOn(player.shaderLoader, "showAssetsLoading");
+
+    player._waitForAssetsReady(doc);
+    expect(player.assetsReady).toBe(false);
+
+    // Only paint-and-idle is pending on this blank iframe doc (no runtime,
+    // no media) — it settles well under ASSETS_LOADING_SHOW_DELAY_MS.
+    await awaitPaintAndIdle(doc.defaultView!);
+
+    expect(player.assetsReady).toBe(true);
+    expect(player.hasAttribute("assets-loading")).toBe(false);
+    expect(showSpy).not.toHaveBeenCalled();
+
+    player.remove();
+  });
+
   it("defers play() until a pending video settles, then plays and clears the overlay attribute", async () => {
     const player = await createConnectedPlayer();
 
@@ -2824,6 +2864,10 @@ describe("HyperframesPlayer asset-ready gate", () => {
 
     player._waitForAssetsReady(doc);
     expect(player.assetsReady).toBe(false);
+    // The loading overlay is debounced (ASSETS_LOADING_SHOW_DELAY_MS) so a
+    // wait that resolves fast never flashes it — advance past the debounce
+    // to exercise the shown state, since this video is still genuinely stuck.
+    await new Promise((resolve) => setTimeout(resolve, 160));
     expect(player.hasAttribute("assets-loading")).toBe(true);
 
     player.play();
@@ -2929,6 +2973,10 @@ describe("HyperframesPlayer asset-ready gate", () => {
     vi.useFakeTimers();
     try {
       const { doc } = createStalledVideoDoc();
+      // A document with no browsing context (created via createHTMLDocument,
+      // as this fixture is) reports hidden=true per spec regardless of the
+      // real page — stub it visible so this test isn't about visibility.
+      Object.defineProperty(doc, "hidden", { value: false, configurable: true });
       stubIframeContentDocument(player.iframe, doc);
 
       player._waitForAssetsReady(doc);
@@ -2943,6 +2991,35 @@ describe("HyperframesPlayer asset-ready gate", () => {
       expect(player._pendingPlay).toBe(false);
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(warnSpy.mock.calls[0]?.[0]).toContain("assets-loading timed out");
+      // computeReady is reported alongside the media/image/font scan, since
+      // compute (window.__renderReady) can also be why the timeout fired.
+      expect(warnSpy.mock.calls[0]?.[1]).toMatchObject({
+        computeReady: false,
+        documentHidden: false,
+      });
+      warnSpy.mockRestore();
+
+      player.remove();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports documentHidden: true when the composition document is backgrounded", async () => {
+    const player = await createConnectedPlayer();
+    vi.useFakeTimers();
+    try {
+      const { doc } = createStalledVideoDoc();
+      Object.defineProperty(doc, "hidden", { value: true, configurable: true });
+      stubIframeContentDocument(player.iframe, doc);
+
+      player._waitForAssetsReady(doc);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      expect(warnSpy.mock.calls[0]?.[1]).toMatchObject({ documentHidden: true });
+      warnSpy.mockRestore();
 
       player.remove();
     } finally {
@@ -3034,6 +3111,9 @@ describe("HyperframesPlayer asset-ready gate", () => {
       adapter: { kind: "runtime", getDuration: () => 5 },
       compositionSize: null,
     });
+    // The blank iframe doc has no pending media, but play() also queues on
+    // the paint-and-idle default now — it fires once that settles.
+    await awaitPaintAndIdle(player.iframe.contentDocument!.defaultView!);
 
     expect(playSpy).toHaveBeenCalledTimes(1);
 
