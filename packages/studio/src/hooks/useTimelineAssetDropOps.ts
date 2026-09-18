@@ -21,7 +21,8 @@ import { formatTimelineAttributeNumber } from "./timelineEditingHelpers";
 import { readFileContent } from "./timelineTimingSync";
 import { commitTimelineCompositionInsertion } from "../utils/timelineCompositionInsert";
 import { extendRootDurationInSource } from "../utils/rootDuration";
-import { usePlayerStore } from "../player";
+import { deriveTimelineStoreKeyForDomId } from "../player/lib/timelineElementHelpers";
+import { selectAndRevealTimelineElement } from "../player/components/timelineDropReveal";
 
 interface UseTimelineAssetDropOpsOptions {
   projectIdRef: MutableRefObject<string | null>;
@@ -121,6 +122,7 @@ export function useTimelineAssetDropOps({
           recordEdit,
         });
 
+        selectAndRevealTimelineElement(deriveTimelineStoreKeyForDomId(newId, targetPath));
         forceReloadSdkSession?.();
         reloadPreview();
       } catch (error) {
@@ -194,7 +196,7 @@ export function useTimelineAssetDropOps({
           writeFile: writeProjectFile,
           recordEdit,
           observeVersion: observeProjectFileVersion,
-          selectHost: (key) => usePlayerStore.getState().setSelectedElementId(key),
+          selectHost: selectAndRevealTimelineElement,
           resync: forceReloadSdkSession,
           refresh: reloadPreview,
         });
