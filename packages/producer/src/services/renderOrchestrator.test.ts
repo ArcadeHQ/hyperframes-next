@@ -42,6 +42,8 @@ import {
   shouldRetryViaPinnedFallback,
   isDeRendererStallError,
   isSequentialCaptureStallError,
+  isParallelCaptureStallError,
+  isRetryableEncoderDeath,
   scanElementTags,
   envInt,
   isDeParallelRouterEnabled,
@@ -63,6 +65,7 @@ import {
   createCaptureObservabilityUpdater,
 } from "./renderOrchestrator.js";
 import { probeRequiresBrowser } from "./render/stages/probeStage.js";
+import { EncoderInterruptedError } from "./render/encoderInterruption.js";
 import { ensureFrameWritten } from "./render/stages/captureHdrFrameShared.js";
 import { resolveCompositeTransfer, shouldUseLayeredComposite } from "./hdrCompositor.js";
 import {
@@ -3695,5 +3698,78 @@ describe("createCaptureObservabilityUpdater", () => {
     const { observability, update } = seed("win32", false);
     update({ workerCount: 4 });
     expect(observability.workerCount).toBe(4);
+  });
+});
+
+describe("parallel stall and encoder death: retry eligibility on default routing", () => {
+  it("recognises the parallel stall by name or by message", () => {
+    const named = Object.assign(new Error("anything"), { name: "ParallelCaptureStallError" });
+    expect(isParallelCaptureStallError(named)).toBe(true);
+    expect(
+      isParallelCaptureStallError(
+        new Error(
+          "[Render] Parallel screenshot capture stalled: no frame progress for 60000ms (stuck at 0/9000).",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isParallelCaptureStallError(
+        new Error(
+          "[Render] Parallel BeginFrame capture stalled after 60000ms with no frame progress",
+        ),
+      ),
+    ).toBe(true);
+    // The sequential stall has its own predicate and its own fallback shape.
+    expect(
+      isParallelCaptureStallError(
+        new Error("[Render] Sequential screenshot capture stalled: no frame progress for 60000ms"),
+      ),
+    ).toBe(false);
+    expect(isParallelCaptureStallError("[Render] Parallel screenshot capture stalled")).toBe(false);
+  });
+
+  it("retries an encoder death only once frames had started, and never a host interruption", () => {
+    const died = (frame: number) =>
+      new Error(
+        `Streaming encoder exited before frame ${frame} was written: FFmpeg exited with code 1`,
+      );
+    // Frames 0 and 1: the encoder rejected its own arguments or first input.
+    // That reproduces on a fresh ffmpeg, so a retry only doubles the time.
+    expect(isRetryableEncoderDeath(died(0))).toBe(false);
+    expect(isRetryableEncoderDeath(died(1))).toBe(false);
+    expect(isRetryableEncoderDeath(died(2))).toBe(true);
+    expect(isRetryableEncoderDeath(died(4831))).toBe(true);
+    // Same prefix, but typed as a host lifecycle interruption: the producer
+    // that owns this render retries that, not the capture stage.
+    expect(
+      isRetryableEncoderDeath(
+        new EncoderInterruptedError("Streaming encoder exited before frame 4831 was written", "x"),
+      ),
+    ).toBe(false);
+    expect(isRetryableEncoderDeath(new Error("Segment 3 encode failed: boom"))).toBe(false);
+    expect(isRetryableEncoderDeath("Streaming encoder exited before frame 9 was written")).toBe(
+      false,
+    );
+  });
+
+  it("routes both through the pinned fallback with no pinned routing", () => {
+    const base = {
+      isVerifyError: false,
+      isCancellation: false,
+      deWorkerInversion: undefined,
+      deParallelRouter: undefined,
+    };
+    // Default routing alone retries nothing…
+    expect(shouldRetryViaPinnedFallback(base)).toBe(false);
+    // …so each of these has to be its own gate, like the sequential stall.
+    expect(shouldRetryViaPinnedFallback({ ...base, isParallelCaptureStall: true })).toBe(true);
+    expect(shouldRetryViaPinnedFallback({ ...base, isEncoderDeath: true })).toBe(true);
+    // Cancellation and host interruption still win.
+    expect(
+      shouldRetryViaPinnedFallback({ ...base, isParallelCaptureStall: true, isCancellation: true }),
+    ).toBe(false);
+    expect(
+      shouldRetryViaPinnedFallback({ ...base, isEncoderDeath: true, isEncoderInterrupted: true }),
+    ).toBe(false);
   });
 });

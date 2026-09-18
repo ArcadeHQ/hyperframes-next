@@ -2359,6 +2359,14 @@ export function shouldRetryViaPinnedFallback(args: {
   /** The producer's no-progress watchdog tripped around a sequential capture call. */
   isSequentialCaptureStall?: boolean;
   /**
+   * The parallel streaming stage's watchdog tripped. Routing-independent
+   * like the sequential stall: on the non-drawElement router (default
+   * routing) it used to fail the render hard while promising a fallback.
+   */
+  isParallelCaptureStall?: boolean;
+  /** The streaming encoder died after frames had started — see isRetryableEncoderDeath. */
+  isEncoderDeath?: boolean;
+  /**
    * A transient browser failure around the capture call itself
    * (`classifyCaptureFailure` → `transient_browser`, e.g. a CDP
    * `Page.captureScreenshot` refusal). Routing-independent like the stalls
@@ -2371,6 +2379,7 @@ export function shouldRetryViaPinnedFallback(args: {
   if (args.isCancellation || args.isEncoderInterrupted) return false;
   if (args.isVerifyError || args.isDeCaptureError) return true;
   if (args.isDeRendererStall === true || args.isSequentialCaptureStall === true) return true;
+  if (args.isParallelCaptureStall === true || args.isEncoderDeath === true) return true;
   if (args.isTransientCaptureError === true) return true;
   return args.deWorkerInversion === "inverted" || args.deParallelRouter === "routed";
 }
@@ -2399,6 +2408,36 @@ export function isSequentialCaptureStallError(err: unknown): boolean {
       err.message,
     )
   );
+}
+
+/**
+ * The parallel streaming stage's no-progress watchdog tripped
+ * (`ParallelCaptureStallError`). Matched on name+message like the sequential
+ * one so it survives a boundary that rebuilds the error from its message.
+ */
+export function isParallelCaptureStallError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    err.name === "ParallelCaptureStallError" ||
+    /^\[Render\] Parallel \S+ capture stalled/.test(err.message)
+  );
+}
+
+const ENCODER_DEATH_FRAME_RE = /^Streaming encoder exited before frame (\d+) was written/;
+
+/**
+ * The streaming encoder died mid-render in a way a fresh ffmpeg might not
+ * repeat: an inactivity kill, a crash, an ENOSPC that cleared. Death before
+ * frame 2 is the encoder rejecting its own arguments or input (bad codec
+ * params, unsupported pixel format, a broken user ffmpeg) and reproduces
+ * exactly, so retrying it only doubles the time to the same failure. A host
+ * lifecycle interruption is typed separately and is never retried here — the
+ * producer that owns the render is what retries that.
+ */
+export function isRetryableEncoderDeath(err: unknown): boolean {
+  if (!(err instanceof Error) || err instanceof EncoderInterruptedError) return false;
+  const match = ENCODER_DEATH_FRAME_RE.exec(err.message);
+  return match !== null && Number(match[1]) >= 2;
 }
 
 /**
@@ -4544,6 +4583,15 @@ async function executeRenderPipeline(input: {
                 assertNotAborted,
                 onProgress,
                 dedupPerfs,
+                // The plan's forceScreenshot is per attempt (a retry forces
+                // it), so it outranks the mode resolved before the router.
+                parallelCaptureLabel: streamingPlan.forceScreenshot
+                  ? "screenshot"
+                  : cfg.useDrawElement
+                    ? "drawElement"
+                    : parallelCaptureMode === "beginframe"
+                      ? "BeginFrame"
+                      : "screenshot",
               }),
           );
         };
@@ -4562,6 +4610,8 @@ async function executeRenderPipeline(input: {
           const isDeCaptureError = isDrawElementCaptureError(err);
           const isDeStall = isDeRendererStallError(err);
           const isSequentialStall = isSequentialCaptureStallError(err);
+          const isParallelStall = isParallelCaptureStallError(err);
+          const isEncoderDeath = isRetryableEncoderDeath(err);
           const isCancellation =
             err instanceof RenderCancelledError || executionSignal?.aborted === true;
           if (
@@ -4574,6 +4624,8 @@ async function executeRenderPipeline(input: {
               deParallelRouter,
               isDeRendererStall: isDeStall,
               isSequentialCaptureStall: isSequentialStall,
+              isParallelCaptureStall: isParallelStall,
+              isEncoderDeath,
               isTransientCaptureError: isTransientBrowserError(err),
             })
           )
@@ -4591,7 +4643,11 @@ async function executeRenderPipeline(input: {
               ? "oom"
               : isDeStall
                 ? "de_renderer_stall"
-                : "capture_error";
+                : isEncoderDeath
+                  ? "encoder_death"
+                  : isParallelStall
+                    ? "parallel_stall"
+                    : "capture_error";
           }
           log.warn(
             isVerifyError
@@ -4600,7 +4656,11 @@ async function executeRenderPipeline(input: {
                 ? "[Render] drawElement renderer stalled; re-rendering via screenshot"
                 : isSequentialStall
                   ? "[Render] sequential capture stalled; retrying on a fresh screenshot session"
-                  : "[Render] capture failed; re-rendering via a fresh screenshot session",
+                  : isParallelStall
+                    ? "[Render] parallel capture stalled; retrying on a fresh single-worker screenshot session"
+                    : isEncoderDeath
+                      ? "[Render] streaming encoder died mid-render; retrying on a fresh screenshot session"
+                      : "[Render] capture failed; re-rendering via a fresh screenshot session",
             { error: err instanceof Error ? err.message : String(err) },
           );
           observability.checkpoint(
@@ -4611,7 +4671,11 @@ async function executeRenderPipeline(input: {
                 ? "drawElement renderer stalled; retrying with forceScreenshot"
                 : isSequentialStall
                   ? "sequential capture stalled; retrying with a fresh screenshot session"
-                  : "capture failed; retrying with a fresh screenshot session",
+                  : isParallelStall
+                    ? "parallel capture stalled; retrying with a fresh single-worker screenshot session"
+                    : isEncoderDeath
+                      ? "streaming encoder died; retrying with a fresh screenshot session"
+                      : "capture failed; retrying with a fresh screenshot session",
           );
           const failedRouting = capturePlan.routing.kind;
           const failure = streamingCaptureFailure(
