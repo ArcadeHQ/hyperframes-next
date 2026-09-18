@@ -30,13 +30,42 @@ Never run two of these concurrently on a dev Mac — the fleet limit is why the 
 | Phase | Command                                                   | Expect                                                                                          |
 | ----- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | 0     | `render a-single --fps 30 -w 1` (stock env)               | log `streaming-encode gate {"enabled":true,"reason":"single_worker",...}`; output 300.000 s     |
-| 1     | `render a-single --fps 30 -w 4` (stock env)               | log `Parallel screenshot capture will stream to the encoder`; work dir < 2 GB; output 300.000 s |
+| 1     | `render a-single --fps 30 -w 4` (stock env, Linux BeginFrame) | log `Parallel screenshot capture will stream to the encoder`; work dir < 2 GB; output 300.000 s. On macOS/Windows the default holds this back — stock `-w 4` must fail the disk preflight, and `HF_CAPTURE_PARALLEL_STREAM=true` must then route it (`reason: parallel_forced`) |
 | 2a    | `HF_SEGMENTED_CAPTURE=true HF_SEGMENT_FRAMES=1500 render a-single --fps 30 -w 1` | log `Segmented capture complete: 6 segment(s)`; output 300.000 s and exactly 9000 frames; no per-frame PSNR dip at a segment boundary (see below) |
-| 2b    | kill the 2a render at ~40 %, rerun with `--resume`        | log `resuming: N segments complete`; output byte-identical to an uninterrupted run              |
+| 2b    | kill the 2a render at ~40 %, rerun with `--resume`        | log `resuming: N segments complete` + N × `segment skipped (resume)`; output byte-identical to an uninterrupted run; the segment dir is gone afterwards unless `--keep-segments` |
 | 2c    | 2a with `HF_SEGMENT_BROWSER_RECYCLE=1`                    | one `[Render] segment browser recycled` line per segment; output unchanged                      |
 | 2d    | 2a with `-w 4`                                            | four `segment worker` lines; output 300.000 s                                                   |
 
 The Phase 0 mutation check is the same render with `PRODUCER_STREAMING_ENCODE_DURATION_CAP_ENABLED=true`: the gate line must flip to `"enabled":false,"reason":"duration_cap"` and the render must fail at the disk preflight on a host without ~75 GB free.
+
+### Interrupting the 2b run
+
+Kill on the manifest, not on a log line — the manifest is the resume contract:
+
+```sh
+HF_SEGMENTED_CAPTURE=true HF_SEGMENT_FRAMES=1500 node <repo>/packages/cli/dist/cli.js \
+  render a-single --fps 30 -w 1 --quality draft -o a-single/renders/resumed.mp4 & RPID=$!
+until [ "$(python3 -c "import json,glob;f=glob.glob('a-single/renders/.hf-segments/*/segments.json');print(len(json.load(open(f[0]))['completed']) if f else 0)")" -ge 2 ]; do sleep 1; done
+kill -9 $RPID
+```
+
+A kill mid-segment leaves a tiny partial `segment_0000N.mp4` that is NOT in the
+manifest — resume must re-capture it. Measured 2026-09-17: killed at 2 of 6,
+resume logged `resuming: 2 segments complete`, finished in 3 m 32 s against
+5 m 13 s uninterrupted, and the output was byte-identical to the full render
+(whole file, not just the video stream).
+
+Verify byte-identity:
+
+```sh
+cmp full.mp4 resumed.mp4 && echo BYTE_IDENTICAL
+# if only container metadata differs, compare the video stream instead:
+ffmpeg -v error -i full.mp4 -map 0:v -c copy -f md5 -
+```
+
+This gate is also the only check on the CLI flag wiring: `--resume` and
+`--keep-segments` cross plan → options → request → config, and a dropped
+hand-off there silently renders without resuming.
 
 PSNR between two renders:
 

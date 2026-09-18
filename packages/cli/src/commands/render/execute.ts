@@ -139,6 +139,8 @@ export async function executeRenderPlan(
     quiet: plan.quiet,
     browserPath,
     debug: plan.debug,
+    resumeSegments: plan.resumeSegments,
+    keepSegments: plan.keepSegments,
     bestEffort: plan.bestEffort,
     variables,
     entryFile: plan.entryFile,
