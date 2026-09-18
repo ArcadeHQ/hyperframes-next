@@ -165,6 +165,8 @@ export {
 export {
   buildEncoderArgs,
   encodeFramesFromDir,
+  buildConcatArgs,
+  concatVideoFiles,
   encodeFramesChunkedConcat,
   muxVideoWithAudio,
   applyFaststart,
