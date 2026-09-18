@@ -33,7 +33,7 @@ Never run two of these concurrently on a dev Mac — the fleet limit is why the 
 | 1     | `render a-single --fps 30 -w 4` (stock env, Linux BeginFrame) | log `Parallel screenshot capture will stream to the encoder`; work dir < 2 GB; output 300.000 s. On macOS/Windows the default holds this back — stock `-w 4` must fail the disk preflight, and `HF_CAPTURE_PARALLEL_STREAM=true` must then route it (`reason: parallel_forced`) |
 | 2a    | `HF_SEGMENTED_CAPTURE=true HF_SEGMENT_FRAMES=1500 render a-single --fps 30 -w 1` | log `Segmented capture complete: 6 segment(s)`; output 300.000 s and exactly 9000 frames; no per-frame PSNR dip at a segment boundary (see below) |
 | 2b    | kill the 2a render at ~40 %, rerun with `--resume`        | log `resuming: N segments complete` + N × `segment skipped (resume)`; output byte-identical to an uninterrupted run; the segment dir is gone afterwards unless `--keep-segments` |
-| 2c    | 2a with `HF_SEGMENT_BROWSER_RECYCLE=1`                    | one `[Render] segment browser recycled` line per segment; output unchanged                      |
+| 2c    | 2a with `HF_SEGMENT_BROWSER_RECYCLE=1`                    | `segment browser recycled (cadence)` once per segment **after the first** (5 for 6 segments), each carrying the session's `rendererRssPeakMb`; output byte-identical to the single-session render |
 | 2d    | 2a with `-w 4`                                            | four `segment worker` lines; output 300.000 s                                                   |
 
 The Phase 0 mutation check is the same render with `PRODUCER_STREAMING_ENCODE_DURATION_CAP_ENABLED=true`: the gate line must flip to `"enabled":false,"reason":"duration_cap"` and the render must fail at the disk preflight on a host without ~75 GB free.
@@ -94,6 +94,19 @@ Healthy output has its **highest** PSNR at the boundary frames — they are
 forced IDRs, so they encode more faithfully than their neighbours (measured
 48–62 dB at n = 1501, 3001, 4501, 6001, 7501 with `HF_SEGMENT_FRAMES=1500`).
 A dip at exactly those indices is the failure this gate is looking for.
+
+### What the 2c gate is really testing
+
+That a browser restart is invisible in the output. Measured 2026-09-17 with
+`HF_SEGMENT_BROWSER_RECYCLE=1`: byte-identical to the single-session render,
+5 m 18 s against 5 m 13 s, so five browser launches cost about five seconds.
+Each recycle logged `rendererRssPeakMb` between 1426 and 1470 — a session's
+renderer reaches ~1.4 GB per 1500-frame segment and the restart returns it,
+which is the whole reason the cadence exists.
+
+Determinism across restarts is also what makes the 2c retry safe: a segment
+re-captured on a fresh session is indistinguishable from one that never
+failed.
 
 ### Known cost: segmented capture is slower
 
