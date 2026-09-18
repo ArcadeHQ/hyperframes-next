@@ -243,7 +243,7 @@ function fakeStageInput(overrides: { totalFrames: number }) {
 
 describe("segmentOutputPath", () => {
   it("zero-pads so lexical order equals frame order", () => {
-    expect(segmentOutputPath("/w", 7)).toBe("/w/segments/segment_00007.mp4");
+    expect(segmentOutputPath("/w/segments", 7)).toBe("/w/segments/segment_00007.mp4");
   });
 });
 
@@ -280,9 +280,9 @@ describe("runCaptureSegmentedStage", () => {
 
     expect(result.success).toBe(true);
     expect(encoders).toEqual([
-      segmentOutputPath(fixtureRoot, 0),
-      segmentOutputPath(fixtureRoot, 1),
-      segmentOutputPath(fixtureRoot, 2),
+      segmentOutputPath(join(fixtureRoot, "segments"), 0),
+      segmentOutputPath(join(fixtureRoot, "segments"), 1),
+      segmentOutputPath(join(fixtureRoot, "segments"), 2),
     ]);
     // Every frame exactly once, in order, across the segment boundaries.
     expect(written.map((w) => w.frame)).toEqual([0, 1, 2, 3, 4, 5, 6]);
@@ -306,6 +306,70 @@ describe("runCaptureSegmentedStage", () => {
       lockGopForChunkConcat: true,
       gopSize: 1,
     });
+  });
+
+  it("skips completed segments and still concats all of them in order", async () => {
+    const stableDir = join(fixtureRoot, "stable");
+    const spawned: string[] = [];
+    const spawnEncoder = mock(async (outputPath: string) => {
+      spawned.push(outputPath);
+      return {
+        writeFrame: async () => true,
+        close: async () => ({ success: true, durationMs: 1, fileSize: 1 }),
+        getExitStatus: () => "success" as const,
+        getExitError: () => undefined,
+      };
+    });
+    const captured: number[] = [];
+    const captureFrame = mock(async (_s: unknown, i: number) => {
+      captured.push(i);
+      return { buffer: Buffer.alloc(1) };
+    });
+    const concat = mock(async () => ({ success: true as const }));
+    const completed: number[] = [];
+
+    const result = await runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 9 }),
+      segmentFrames: 3,
+      segmentDir: stableDir,
+      completedSegments: new Set([0]),
+      onSegmentComplete: (e) => completed.push(e.index),
+      deps: { spawnEncoder, captureFrame, concat },
+    });
+
+    expect(result.success).toBe(true);
+    // Segment 0's frames are not re-captured, and no encoder is spawned for it.
+    expect(captured).toEqual([3, 4, 5, 6, 7, 8]);
+    expect(spawned).toEqual([segmentOutputPath(stableDir, 1), segmentOutputPath(stableDir, 2)]);
+    expect(completed).toEqual([1, 2]);
+    // The skipped segment is still concatenated, in order.
+    expect(concat).toHaveBeenCalledWith(
+      [
+        segmentOutputPath(stableDir, 0),
+        segmentOutputPath(stableDir, 1),
+        segmentOutputPath(stableDir, 2),
+      ],
+      join(fixtureRoot, "video-only.mp4"),
+      undefined,
+      expect.anything(),
+    );
+  });
+
+  it("can fall back when the first PENDING segment fails to spawn on a resume", async () => {
+    // Segment 0 is already done, so segment 1 is the first one this run has to
+    // capture; nothing new is on disk yet, so the plain streaming path is
+    // still a safe replan target.
+    const spawnEncoder = mock(async () => {
+      throw new Error("ffmpeg missing");
+    });
+    const result = await runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 6 }),
+      segmentFrames: 3,
+      segmentDir: join(fixtureRoot, "stable2"),
+      completedSegments: new Set([0]),
+      deps: { spawnEncoder },
+    });
+    expect(result).toEqual({ success: false });
   });
 
   it("returns success:false when the first encoder cannot spawn, and has closed the probe", async () => {
