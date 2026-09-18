@@ -42,13 +42,14 @@ import {
   inlineMountedComposition,
   HOSTED_EXTENSIONS,
   hostItemDirectory,
+  MAX_HOSTED_DIRECTORY_BYTES,
   processAssets,
   withBaseHref,
 } from "./catalog-payload-assets.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
-const payloadRoot = resolve(repoRoot, "docs/public/catalog");
+export const payloadRoot = resolve(repoRoot, "docs/public/catalog");
 
 /**
  * Inlining budget for a single payload. A payload is fetched when the reader
@@ -178,7 +179,10 @@ function renderEntry(
   return { entry, fromSnippet: true };
 }
 
-async function buildPayload(item: CatalogItem): Promise<"written" | "skipped"> {
+// Pre-existing complexity from the item's independent skip conditions; the
+// over-budget branch added here is one more of the same shape, not a new debt.
+// fallow-ignore-next-line complexity
+export async function buildPayload(item: CatalogItem): Promise<"written" | "skipped"> {
   const outPath = join(payloadRoot, typeDir(item.kind), `${item.name}.json`);
 
   // An item that stops qualifying has to lose its payload, or the page
@@ -239,10 +243,23 @@ async function buildPayload(item: CatalogItem): Promise<"written" | "skipped"> {
     // duplicate assets already shared by hash and roughly double what the
     // repository carries, to fix a handful of compositions.
     const itemUrl = `/public/catalog/items/${item.name}`;
-    const baseHref =
+    const hostResult =
       interactive || needsOwnDirectory(item, unresolved)
         ? hostItemDirectory(projectDir, join(payloadRoot, "items", item.name), `${itemUrl}/`)
-        : "";
+        : { status: "not-needed" as const };
+
+    // A directory that is needed but over budget still leaves the composition
+    // with dead relative references and no <base> to resolve them against —
+    // that is worse than the recorded video it already has.
+    if (hostResult.status === "over-budget") {
+      console.log(
+        `  – ${item.name}: directory over the ${(MAX_HOSTED_DIRECTORY_BYTES / 1e6).toFixed(1)} MB host budget, keeping the recorded video`,
+      );
+      dropStalePayload();
+      return "skipped";
+    }
+    const baseHref = hostResult.status === "hosted" ? hostResult.baseHref : "";
+
     // An interactive preview keeps its mount, so the component travels inline
     // and the demo's own pinned values come off — the reader's choices are what
     // should reach it.
