@@ -1,6 +1,6 @@
 # Long-form render fixtures
 
-Manual gates for `plans/long-form-render/`. Not part of the automated lanes (they render for minutes and need ~600 MB of source).
+Manual gates for the long-form render work (PRINFRA-1196; spec and phase plans live outside this repo). Not part of the automated lanes (they render for minutes and need ~600 MB of source).
 
 ## Generate the source once
 
