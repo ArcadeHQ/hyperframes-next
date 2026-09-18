@@ -279,11 +279,19 @@ export function replanAfterFailure(plan: CapturePlan, failure: CapturePlanFailur
   // low-resource target. It is also the viable choice when disk, rather than
   // RAM, makes the preferred fallback impossible — for any routing kind
   // (see drawElementVerificationFailure for when that flag is populated).
+  // An interleaved parallel-streaming plan (the non-DE router's shape) never
+  // retries at N workers. With forceParallelStream off, N workers means
+  // contiguous-chunk streaming, where worker k+1's first frame waits for ALL
+  // of worker k's: throughput serialises to roughly one worker while N Chrome
+  // processes run, and the no-progress watchdog can re-trip on the same
+  // render. Single-worker streaming is the fully hardened path — typed stall,
+  // init-excluded clock, routing-independent retry — so that is the target.
+  const retryAtOneWorker = isMemoryExhaustion || plan.forceParallelStream;
   const fallback =
     plan.routing.kind === "default"
       ? {
           kind: plan.kind,
-          workerCount: isMemoryExhaustion ? 1 : plan.workerCount,
+          workerCount: retryAtOneWorker ? 1 : plan.workerCount,
           forceParallelStream: false,
         }
       : isMemoryExhaustion || diskFallbackUnavailable
