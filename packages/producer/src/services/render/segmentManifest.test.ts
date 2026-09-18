@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   computeSegmentPlanHash,
+  probeSegmentFrameCount,
   readSegmentManifest,
   segmentDirFor,
   validateCompletedSegments,
@@ -182,5 +183,39 @@ describe("validateCompletedSegments", () => {
     };
     expect((await validateCompletedSegments(manifest, "old", async () => 3)).size).toBe(1);
     expect((await validateCompletedSegments(manifest, "new", async () => 3)).size).toBe(0);
+  });
+});
+
+describe("probeSegmentFrameCount", () => {
+  it("derives the count from duration and fps", async () => {
+    const probe = async () => ({ videoStreamDurationSeconds: 50, fps: 30 });
+    expect(await probeSegmentFrameCount("/s.mp4", probe)).toBe(1500);
+  });
+
+  it("returns null for anything it cannot trust, rather than a wrong count", async () => {
+    // Each of these would otherwise produce a number that could match the
+    // slice length by accident and let a bad segment be reused.
+    expect(
+      await probeSegmentFrameCount("/s.mp4", async () => ({
+        videoStreamDurationSeconds: Number.NaN,
+        fps: 30,
+      })),
+    ).toBeNull();
+    expect(
+      await probeSegmentFrameCount("/s.mp4", async () => ({
+        videoStreamDurationSeconds: 50,
+        fps: 0,
+      })),
+    ).toBeNull();
+    expect(
+      await probeSegmentFrameCount("/s.mp4", async () => {
+        throw new Error("not a media file");
+      }),
+    ).toBeNull();
+  });
+
+  it("detects a truncated segment through its shorter duration", async () => {
+    const probe = async () => ({ videoStreamDurationSeconds: 33.3, fps: 30 });
+    expect(await probeSegmentFrameCount("/s.mp4", probe)).not.toBe(1500);
   });
 });

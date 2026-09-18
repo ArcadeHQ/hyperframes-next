@@ -123,6 +123,30 @@ export function writeSegmentManifest(segmentDir: string, manifest: SegmentManife
 }
 
 /**
+ * Frame count of a finished segment, derived from its probed duration and
+ * frame rate. There is no exact-count reader in the engine's ffprobe utils
+ * and `-count_frames` decodes the whole file; duration is enough here because
+ * the only failure this has to catch is a segment that is missing frames,
+ * which shortens the duration. Rounding can only reject a good segment, and
+ * the cost of that is re-capturing it.
+ */
+export async function probeSegmentFrameCount(
+  path: string,
+  probe: (path: string) => Promise<{ videoStreamDurationSeconds: number; fps: number }>,
+): Promise<number | null> {
+  try {
+    const meta = await probe(path);
+    if (!Number.isFinite(meta.videoStreamDurationSeconds) || !Number.isFinite(meta.fps))
+      return null;
+    if (meta.fps <= 0) return null;
+    return Math.round(meta.videoStreamDurationSeconds * meta.fps);
+  } catch {
+    // Unprobeable means unusable: the segment is re-captured.
+    return null;
+  }
+}
+
+/**
  * Indices safe to skip on resume. A segment counts only if the hash matches,
  * the file exists at the recorded size, and its frame count equals the slice
  * length. Anything else re-captures — the cost of re-capturing a good segment
