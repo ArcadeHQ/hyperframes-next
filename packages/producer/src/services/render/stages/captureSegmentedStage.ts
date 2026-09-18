@@ -12,7 +12,7 @@
  * This phase keeps ONE browser session for the whole render and no retry;
  * recycling and retry are 2c, multi-worker is 2d.
  */
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   captureFrameToBuffer,
@@ -40,6 +40,7 @@ import { updateJobStatus } from "../shared.js";
 import { encoderFailureError } from "../encoderInterruption.js";
 import type { SdrSegmentedCapturePlan } from "../capturePlan.js";
 import { planSegments, type SegmentSlice } from "../segmentPlan.js";
+import { isTargetLossError } from "../segmentRecycle.js";
 import {
   raceAgainstStall,
   resolveCaptureStallTimeoutMs,
@@ -50,6 +51,14 @@ export interface SegmentedStageDeps {
   spawnEncoder: typeof spawnStreamingEncoder;
   captureFrame: typeof captureFrameToBuffer;
   concat: typeof concatVideoFiles;
+  closeSession: typeof closeCaptureSession;
+  /** Delete a partial segment so a retry cannot leave a stale file behind. */
+  removeFile: (path: string) => void;
+}
+
+/** Opens a fresh, initialized capture session with the video injector attached. */
+export interface SessionFactory {
+  create: () => Promise<CaptureSession>;
 }
 
 export interface CaptureSegmentedStageInput {
@@ -86,11 +95,16 @@ export interface CaptureSegmentedStageInput {
     path: string;
     bytes: number;
   }) => void;
+  /** Opens each session; defaults to reusing the probe session, then fresh ones. */
+  sessionFactory?: SessionFactory;
+  /** Recycle the browser every N segments; 0 or absent keeps one session. */
+  browserRecycleEverySegments?: number;
   /** Test seam; defaults to the real engine functions. */
   deps?: Partial<SegmentedStageDeps>;
   updateCaptureObservability?: (patch: {
     capturePath?: "segmented";
     segmentIndex?: number;
+    segmentRetries?: number;
   }) => void;
 }
 
@@ -103,6 +117,10 @@ export type CaptureSegmentedStageResult =
       workerCount: 1;
       segments: number;
       segmentPaths: string[];
+      /** Segments re-captured after a Chrome target loss. */
+      segmentRetries: number;
+      /** Cadence-driven browser restarts (retries are counted separately). */
+      browserRecycles: number;
     }
   /** The first segment's encoder could not spawn — caller replans to sdr_streaming. */
   | { success: false };
@@ -240,12 +258,42 @@ async function captureSegment(ctx: SegmentCaptureContext, segment: SegmentSlice)
   }
 }
 
-function resolveDeps(input: CaptureSegmentedStageInput): SegmentedStageDeps {
+const DEFAULT_DEPS: SegmentedStageDeps = {
+  spawnEncoder: spawnStreamingEncoder,
+  captureFrame: captureFrameToBuffer,
+  concat: concatVideoFiles,
+  closeSession: closeCaptureSession,
+  removeFile: (path) => rmSync(path, { force: true }),
+};
+
+/**
+ * Default factory: the probe session is consumed by the first call, every
+ * later one opens a fresh browser. Initialization happens here so a recycled
+ * session is indistinguishable from the first.
+ */
+function defaultSessionFactory(input: CaptureSegmentedStageInput): SessionFactory {
+  let probeSession = input.probeSession;
   return {
-    spawnEncoder: input.deps?.spawnEncoder ?? spawnStreamingEncoder,
-    captureFrame: input.deps?.captureFrame ?? captureFrameToBuffer,
-    concat: input.deps?.concat ?? concatVideoFiles,
+    create: async () => {
+      const session = probeSession
+        ? probeSession
+        : await openSegmentedSession({ ...input, probeSession: null });
+      if (probeSession) {
+        openSegmentedSessionReuse(input, probeSession);
+        probeSession = null;
+      }
+      if (!session.isInitialized) await initializeSession(session);
+      await completeDeferredDrawElementInit(session);
+      return session;
+    },
   };
+}
+
+function openSegmentedSessionReuse(
+  input: CaptureSegmentedStageInput,
+  session: CaptureSession,
+): void {
+  prepareCaptureSessionForReuse(session, input.framesDir, input.createRenderVideoFrameInjector());
 }
 
 /** Reuse the probe session when there is one, else open a fresh one. */
@@ -305,7 +353,7 @@ export async function runCaptureSegmentedStage(
     segmentFrames,
     updateCaptureObservability,
   } = input;
-  const { spawnEncoder, captureFrame, concat } = resolveDeps(input);
+  const deps: SegmentedStageDeps = { ...DEFAULT_DEPS, ...input.deps };
 
   const segments = planSegments(totalFrames, segmentFrames);
   const segmentDir = input.segmentDir ?? join(workDir, "segments");
@@ -315,37 +363,108 @@ export async function runCaptureSegmentedStage(
   // the plain streaming path on a spawn failure; by any later one, encoded
   // segments exist that a fallback would throw away.
   const firstPending = segments.find((s) => !skip.has(s.index));
-  const session = await openSegmentedSession(input);
+  const factory = input.sessionFactory ?? defaultSessionFactory(input);
+  const recycleEvery = input.browserRecycleEverySegments ?? 0;
 
   let lastBrowserConsole: string[] = [];
   let encodeMs = 0;
+  let segmentRetries = 0;
+  let browserRecycles = 0;
+  let sessionSegments = 0;
   const segmentPaths: string[] = [];
 
-  try {
-    if (!session.isInitialized) {
-      await initializeSession(session);
-    }
-    await completeDeferredDrawElementInit(session);
-    assertNotAborted();
-    lastBrowserConsole = session.browserConsoleBuffer;
+  const ctx: SegmentCaptureContext = {
+    session: await factory.create(),
+    job,
+    cfg,
+    totalFrames,
+    segmentCount: segments.length,
+    segmentDir,
+    skipped: skip.size,
+    streamingEncoderOptions,
+    spawnEncoder: deps.spawnEncoder,
+    captureFrame: deps.captureFrame,
+    stallTimeoutMs: resolveCaptureStallTimeoutMs(),
+    abortSignal,
+    assertNotAborted,
+    onProgress,
+    onSegmentComplete: input.onSegmentComplete,
+  };
 
-    const ctx: SegmentCaptureContext = {
-      session,
-      job,
-      cfg,
-      totalFrames,
-      segmentCount: segments.length,
-      segmentDir,
-      skipped: skip.size,
-      streamingEncoderOptions,
-      spawnEncoder,
-      captureFrame,
-      stallTimeoutMs: resolveCaptureStallTimeoutMs(),
-      abortSignal,
-      assertNotAborted,
-      onProgress,
-      onSegmentComplete: input.onSegmentComplete,
-    };
+  /** Close the current browser and open a fresh one at a segment boundary. */
+  const recycleSession = async (why: "cadence" | "retry"): Promise<void> => {
+    lastBrowserConsole = ctx.session.browserConsoleBuffer;
+    // Counters are only valid while the session is live, so harvest before close.
+    dedupPerfs.push(getCapturePerfSummary(ctx.session));
+    const memory = ctx.session.chromeMemory?.stats();
+    await deps.closeSession(ctx.session);
+    ctx.session = await factory.create();
+    sessionSegments = 0;
+    if (why === "cadence") browserRecycles += 1;
+    log.info(`[Render] segment browser recycled (${why})`, {
+      rendererRssPeakMb: memory?.rendererRssPeakMb,
+      rssLastMb: memory?.rssLastMb,
+      samples: memory?.samples,
+    });
+  };
+
+  /**
+   * One segment, with its cadence recycle and its single target-loss retry.
+   * Returns "fallback" only for a first-pending spawn failure, which is the
+   * one case the caller can still replan onto the plain streaming path.
+   */
+  /** The encoder never started. Only the first pending segment can fall back. */
+  const onSpawnFailure = (err: SegmentEncoderSpawnError, segment: SegmentSlice): "fallback" => {
+    if (segment.index !== firstPending?.index) throw err.reason;
+    log.warn("[Render] Segment encoder spawn failed; falling back to single-encoder streaming.", {
+      error: err.message,
+      outputFormat,
+      segments: segments.length,
+      durationSeconds: job.duration,
+    });
+    return "fallback";
+  };
+
+  /**
+   * Chrome losing its target mid-capture is the one failure a fresh browser
+   * fixes; everything else reproduces, so retrying it only doubles the time to
+   * the same error. Once, then it propagates.
+   */
+  const retryAfterTargetLoss = async (
+    err: unknown,
+    segment: SegmentSlice,
+    segmentPath: string,
+  ): Promise<void> => {
+    if (!isTargetLossError(err) || abortSignal?.aborted) throw err;
+    segmentRetries += 1;
+    updateCaptureObservability?.({ segmentRetries });
+    log.warn(
+      `[Render] segment ${segment.index}: browser target lost; retrying once on a fresh session`,
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    deps.removeFile(segmentPath);
+    await recycleSession("retry");
+    encodeMs += await captureSegment(ctx, segment);
+  };
+
+  const runSegment = async (segment: SegmentSlice): Promise<"done" | "fallback"> => {
+    const segmentPath = segmentOutputPath(segmentDir, segment.index);
+    if (recycleEvery > 0 && sessionSegments >= recycleEvery) await recycleSession("cadence");
+    updateCaptureObservability?.({ capturePath: "segmented", segmentIndex: segment.index });
+    try {
+      encodeMs += await captureSegment(ctx, segment);
+    } catch (err) {
+      if (err instanceof SegmentEncoderSpawnError) return onSpawnFailure(err, segment);
+      await retryAfterTargetLoss(err, segment, segmentPath);
+    }
+    sessionSegments += 1;
+    segmentPaths.push(segmentPath);
+    return "done";
+  };
+
+  try {
+    assertNotAborted();
+    lastBrowserConsole = ctx.session.browserConsoleBuffer;
 
     for (const segment of segments) {
       assertNotAborted();
@@ -354,36 +473,19 @@ export async function runCaptureSegmentedStage(
         log.info("[Render] segment skipped (resume)", { index: segment.index });
         continue;
       }
-      updateCaptureObservability?.({ capturePath: "segmented", segmentIndex: segment.index });
-      try {
-        encodeMs += await captureSegment(ctx, segment);
-      } catch (err) {
-        if (!(err instanceof SegmentEncoderSpawnError)) throw err;
-        if (segment.index !== firstPending?.index) throw err.reason;
-        log.warn(
-          "[Render] Segment encoder spawn failed; falling back to single-encoder streaming.",
-          {
-            error: err.message,
-            outputFormat,
-            segments: segments.length,
-            durationSeconds: job.duration,
-          },
-        );
-        return { success: false };
-      }
-      segmentPaths.push(segmentOutputPath(segmentDir, segment.index));
+      if ((await runSegment(segment)) === "fallback") return { success: false };
     }
 
-    dedupPerfs.push(getCapturePerfSummary(session));
+    dedupPerfs.push(getCapturePerfSummary(ctx.session));
   } catch (error) {
-    lastBrowserConsole = session.browserConsoleBuffer;
+    lastBrowserConsole = ctx.session.browserConsoleBuffer;
     throw wrapCaptureStageError(error, lastBrowserConsole);
   } finally {
-    lastBrowserConsole = session.browserConsoleBuffer;
-    await closeCaptureSession(session);
+    lastBrowserConsole = ctx.session.browserConsoleBuffer;
+    await deps.closeSession(ctx.session);
   }
 
-  await concatSegments(concat, segmentPaths, videoOnlyPath, abortSignal, cfg);
+  await concatSegments(deps.concat, segmentPaths, videoOnlyPath, abortSignal, cfg);
 
   return {
     success: true,
@@ -393,5 +495,7 @@ export async function runCaptureSegmentedStage(
     workerCount: 1,
     segments: segments.length,
     segmentPaths,
+    segmentRetries,
+    browserRecycles,
   };
 }
