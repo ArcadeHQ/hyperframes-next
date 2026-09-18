@@ -43,6 +43,7 @@ import {
   isDeRendererStallError,
   isSequentialCaptureStallError,
   isParallelCaptureStallError,
+  isParallelStreamForced,
   fallbackCaptureModeLabel,
   isRetryableEncoderDeath,
   scanElementTags,
@@ -3811,5 +3812,22 @@ describe("fallbackCaptureModeLabel: trace label when no probe session is open", 
         platform: "darwin",
       }),
     ).toBe("drawelement");
+  });
+});
+
+describe("isParallelStreamForced: the plan carries the manual interleave opt-in", () => {
+  const flagsOff = { deParallelStreamForced: false, captureParallelStreamForced: false };
+
+  it("folds HF_DE_PARALLEL_STREAM=true into the plan flag so the retry drops to one worker", () => {
+    expect(isParallelStreamForced({ HF_DE_PARALLEL_STREAM: "true" }, flagsOff)).toBe(true);
+  });
+
+  it("otherwise follows the two routers' flags", () => {
+    expect(isParallelStreamForced({}, flagsOff)).toBe(false);
+    expect(isParallelStreamForced({ HF_DE_PARALLEL_STREAM: "false" }, flagsOff)).toBe(false);
+    expect(isParallelStreamForced({}, { ...flagsOff, deParallelStreamForced: true })).toBe(true);
+    expect(isParallelStreamForced({}, { ...flagsOff, captureParallelStreamForced: true })).toBe(
+      true,
+    );
   });
 });

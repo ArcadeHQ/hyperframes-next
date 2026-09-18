@@ -626,7 +626,7 @@ export interface RenderPerfSummary {
      * `fallbackReason` being set is the "any fallback fired" signal.
      */
     selfVerifyFallback: boolean;
-    /** What tripped the fallback retry: psnr | blank | oom | de_renderer_stall | capture_error. */
+    /** What tripped the fallback retry: psnr | blank | oom | de_renderer_stall | encoder_death | parallel_stall | capture_error. */
     fallbackReason?: string;
     /** The failing PSNR (dB) when `fallbackReason === "psnr"`; undefined for every other reason (no score exists). */
     fallbackFailedDb?: number;
@@ -2558,6 +2558,28 @@ export function isCaptureParallelStreamRouterEnabled(
 }
 
 /**
+ * Whether this render distributes frames interleaved across its workers. The
+ * two routers set their flags; `HF_DE_PARALLEL_STREAM=true` is the manual
+ * opt-in the streaming stage also honours on its own. Folding all three into
+ * the plan is what keeps the plan, and so the retry target and telemetry, in
+ * agreement with the distribution the stage actually picks: before this, an
+ * env-opt-in render below the DE router's frame floor carried
+ * `forceParallelStream: false`, so its retry kept N workers, which the env
+ * var then re-interleaved instead of dropping to the hardened single-worker
+ * path. Pure; exported for tests.
+ */
+export function isParallelStreamForced(
+  env: Readonly<Record<string, string | undefined>>,
+  flags: { deParallelStreamForced: boolean; captureParallelStreamForced: boolean },
+): boolean {
+  return (
+    flags.deParallelStreamForced ||
+    flags.captureParallelStreamForced ||
+    env.HF_DE_PARALLEL_STREAM === "true"
+  );
+}
+
+/**
  * The duration at which segmented capture is meant to become the default
  * (spec §5 Phase 2d). Not the shipped default: that flip is its own release
  * step, gated on the 40-minute soak, and shipping it alongside the rest of
@@ -4234,7 +4256,10 @@ async function executeRenderPipeline(input: {
     let capturePlan: CapturePlan = createCapturePlan({
       workerCount,
       forceScreenshot: captureForceScreenshot,
-      forceParallelStream: deParallelStreamForced || captureParallelStreamForced,
+      forceParallelStream: isParallelStreamForced(process.env, {
+        deParallelStreamForced,
+        captureParallelStreamForced,
+      }),
       useStreamingEncode,
       // Segmented capture is opt-in in Phase 2a and single-worker only; the
       // excluded routes are the ones whose concat-copy or capture loop the
@@ -4672,7 +4697,7 @@ async function executeRenderPipeline(input: {
                 : isSequentialStall
                   ? "[Render] sequential capture stalled; retrying on a fresh screenshot session"
                   : isParallelStall
-                    ? "[Render] parallel capture stalled; retrying on a fresh single-worker screenshot session"
+                    ? "[Render] parallel capture stalled; retrying on a fresh screenshot session"
                     : isEncoderDeath
                       ? "[Render] streaming encoder died mid-render; retrying on a fresh screenshot session"
                       : "[Render] capture failed; re-rendering via a fresh screenshot session",
@@ -4687,7 +4712,7 @@ async function executeRenderPipeline(input: {
                 : isSequentialStall
                   ? "sequential capture stalled; retrying with a fresh screenshot session"
                   : isParallelStall
-                    ? "parallel capture stalled; retrying with a fresh single-worker screenshot session"
+                    ? "parallel capture stalled; retrying with a fresh screenshot session"
                     : isEncoderDeath
                       ? "streaming encoder died; retrying with a fresh screenshot session"
                       : "capture failed; retrying with a fresh screenshot session",

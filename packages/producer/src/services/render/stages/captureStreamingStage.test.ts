@@ -101,6 +101,9 @@ mock.module("@hyperframes/engine", () => ({
     if (failWorkerTransient) {
       // One worker's Chrome died. The engine reports the ORIGINAL failure
       // through the hook, then the pool rejects with its flattened summary.
+      // That ordering is the engine's contract, pinned without a browser by
+      // parallelCoordinator.test.ts "createPoolFailureHandler"; this mock
+      // only replays it.
       injectedWorkerFailure = Object.assign(
         new Error("Protocol error (Page.captureScreenshot): Target closed"),
         { kind: "transient_browser" },
