@@ -13,6 +13,9 @@
  * composition as a `srcdoc` string, so JSON is the delivery format that both
  * survives the deploy and matches what the player wants.
  *
+ * An item needing `chrome://flags/#canvas-draw-element` gets
+ * `{ unsupported: "canvas-draw-element" }` at the same path instead of `{ html }`.
+ *
  * Usage:
  *   npx tsx scripts/generate-catalog-payloads.ts                    # all items
  *   npx tsx scripts/generate-catalog-payloads.ts --only data-chart  # single item
@@ -189,6 +192,10 @@ export async function buildPayload(item: CatalogItem): Promise<"written" | "skip
   // generator keeps finding one on disk and emits a player for a preview this
   // run just decided it cannot build.
   const dropStalePayload = () => rmSync(outPath, { force: true });
+  const writePayload = (body: object) => {
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, JSON.stringify(body), "utf-8");
+  };
 
   // A composition whose variables are meant to be changed has to reach the
   // reader uncompiled, or its values are already resolved into the markup.
@@ -220,8 +227,10 @@ export async function buildPayload(item: CatalogItem): Promise<"written" | "skip
     const html = readFileSync(join(projectDir, "index.html"), "utf-8");
 
     if (needsCanvasDrawElement(html)) {
-      console.log(`  – ${item.name}: needs canvas drawElement, keeping the recorded video`);
-      dropStalePayload();
+      // A marker file, not an absence: the catalog card reads this to show an honest
+      // "needs this flag" tile instead of silently falling back to nothing.
+      writePayload({ unsupported: "canvas-draw-element" });
+      console.log(`  – ${item.name}: needs canvas drawElement, marked unsupported`);
       return "skipped";
     }
     const assetTarget = { dir: join(payloadRoot, "assets"), urlBase: "/public/catalog/assets" };
@@ -283,8 +292,7 @@ export async function buildPayload(item: CatalogItem): Promise<"written" | "skip
       return "skipped";
     }
 
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, JSON.stringify({ html: withBase }), "utf-8");
+    writePayload({ html: withBase });
 
     const counts = [
       hosted + externalized > 0 ? `${hosted + externalized} hosted` : "",
