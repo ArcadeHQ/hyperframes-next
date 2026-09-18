@@ -141,6 +141,8 @@ import {
   type SdrDiskCapturePlan,
   type CaptureRouting,
 } from "./render/capturePlan.js";
+import { runCaptureSegmentedStage } from "./render/stages/captureSegmentedStage.js";
+import { resolveSegmentFrames } from "./render/segmentPlan.js";
 import { normalizeErrorMessage } from "../utils/errorMessage.js";
 import { formatCaptureFrameName } from "../utils/paths.js";
 import { findRenderHdrAutoPromotionTrigger, resolveEffectiveHdrMode } from "./render/hdrMode.js";
@@ -2484,6 +2486,13 @@ export function isCaptureParallelStreamRouterEnabled(
   return true;
 }
 
+/** Segmented capture opt-in (spec §5 Phase 2). Phase 2d makes it the default for long renders. */
+export function isSegmentedCaptureRequested(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  return env.HF_SEGMENTED_CAPTURE?.trim().toLowerCase() === "true";
+}
+
 export function shouldStreamParallelCapture(args: {
   /** Router switch for this render — see isCaptureParallelStreamRouterEnabled. */
   routerEnabled: boolean;
@@ -4117,6 +4126,16 @@ async function executeRenderPipeline(input: {
       forceScreenshot: captureForceScreenshot,
       forceParallelStream: deParallelStreamForced || captureParallelStreamForced,
       useStreamingEncode,
+      // Segmented capture is opt-in in Phase 2a and single-worker only; the
+      // excluded routes are the ones whose concat-copy or capture loop the
+      // segment contract does not cover (webm VP9 concat is fragile, HDR and
+      // shader transitions run their own compositor).
+      useSegmentedCapture:
+        isSegmentedCaptureRequested(process.env) &&
+        workerCount === 1 &&
+        (outputFormat === "mp4" || outputFormat === "mov") &&
+        !hasHdrContent &&
+        !compiled.hasShaderTransitions,
       useLayeredComposite,
       usePageSideCompositing: usePageSideCompositingForTransitions,
       hasHdrContent,
@@ -4269,7 +4288,79 @@ async function executeRenderPipeline(input: {
       // streaming spawn fails (non-abort) the stage returns { success: false }
       // and we fall back to the disk path below.
       let streamingHandled = false;
-      if (capturePlan.kind === "sdr_streaming") {
+      if (capturePlan.kind === "sdr_segmented") {
+        const segmentedPlan = capturePlan;
+        const captureFrameStart = Date.now();
+        resetCaptureAttemptProgress(job);
+        const segmentedRes = await observeRenderStage(
+          observability,
+          "capture_segmented",
+          captureStageObservationData(),
+          () =>
+            runCaptureSegmentedStage({
+              fileServer: activeFileServer,
+              workDir,
+              framesDir,
+              videoOnlyPath,
+              job,
+              totalFrames,
+              cfg,
+              plan: segmentedPlan,
+              log,
+              probeSession,
+              outputFormat,
+              streamingEncoderOptions: {
+                fps: job.config.fps,
+                width,
+                height,
+                codec: preset.codec,
+                preset: preset.preset,
+                quality: effectiveQuality,
+                bitrate: effectiveBitrate,
+                pixelFormat: preset.pixelFormat,
+                vp9CpuUsed: cfg.vp9CpuUsed,
+                useGpu: job.config.useGpu,
+                imageFormat: captureOptions.format || "jpeg",
+                hdr: preset.hdr,
+                // No hlsEncoderGopLock here: each segment sets its own GOP to
+                // its own length, and hls never reaches this route.
+              },
+              buildCaptureOptions,
+              createRenderVideoFrameInjector,
+              abortSignal: executionSignal,
+              assertNotAborted,
+              onProgress,
+              dedupPerfs,
+              segmentFrames: resolveSegmentFrames(process.env),
+              updateCaptureObservability,
+            }),
+        );
+        if (segmentedRes.success) {
+          streamingHandled = true;
+          workerCount = segmentedRes.workerCount;
+          updateCaptureObservability({ workerCount });
+          probeSession = segmentedRes.probeSession;
+          lastBrowserConsole = segmentedRes.lastBrowserConsole;
+          perfStages.captureMs = Date.now() - stage4Start;
+          perfStages.captureFrameMs = Date.now() - captureFrameStart;
+          perfStages.captureSetupMs = Math.max(0, perfStages.captureMs - perfStages.captureFrameMs);
+          perfStages.encodeMs = segmentedRes.encodeMs;
+          log.info(
+            `[Render] Segmented capture complete: ${segmentedRes.segments} segment(s) concatenated.`,
+          );
+        } else {
+          // Only the first segment's encoder can fail to spawn this way, so
+          // nothing was captured: drop to the plain streaming plan and let
+          // the branch below run the render normally.
+          capturePlan = replanAfterFailure(capturePlan, { kind: "streaming_unavailable" });
+          syncCapturePlan();
+          observability.checkpoint(
+            "capture_segmented",
+            "segment encoder spawn failed; falling back to single-encoder streaming",
+          );
+        }
+      }
+      if (!streamingHandled && capturePlan.kind === "sdr_streaming") {
         const captureFrameStart = Date.now();
         const invokeStreaming = () => {
           if (capturePlan.kind !== "sdr_streaming") {
