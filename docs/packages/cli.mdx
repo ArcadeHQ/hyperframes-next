@@ -940,8 +940,9 @@ on the bundled `chrome-headless-shell`, at DPR 1, with no forced screenshot. On
 macOS and Windows, multi-worker capture is screenshot-based and still writes
 frames to disk unless you opt in with `HF_CAPTURE_PARALLEL_STREAM=true`. That
 path now retries a stalled worker pool or a mid-stream encoder exit on a fresh
-single-worker session instead of failing the render, but it stays opt-in until
-its error rate matches the disk path's.
+screenshot session, dropping an interleaved render to one worker, instead of
+failing the render; it stays opt-in until its error rate matches the disk
+path's.
 
 Renders still land on the disk path when the output is `png-sequence` or `gif`,
 when HDR or shader-transition layering is in play, and when streaming is
