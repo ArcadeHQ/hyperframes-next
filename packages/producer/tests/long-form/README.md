@@ -34,7 +34,7 @@ Never run two of these concurrently on a dev Mac — the fleet limit is why the 
 | 2a    | `HF_SEGMENTED_CAPTURE=true HF_SEGMENT_FRAMES=1500 render a-single --fps 30 -w 1` | log `Segmented capture complete: 6 segment(s)`; output 300.000 s and exactly 9000 frames; no per-frame PSNR dip at a segment boundary (see below) |
 | 2b    | kill the 2a render at ~40 %, rerun with `--resume`        | log `resuming: N segments complete` + N × `segment skipped (resume)`; output byte-identical to an uninterrupted run; the segment dir is gone afterwards unless `--keep-segments` |
 | 2c    | 2a with `HF_SEGMENT_BROWSER_RECYCLE=1`                    | `segment browser recycled (cadence)` once per segment **after the first** (5 for 6 segments), each carrying the session's `rendererRssPeakMb`; output byte-identical to the single-session render |
-| 2d    | 2a with `-w 4`                                            | four `segment worker` lines; output 300.000 s                                                   |
+| 2d    | 2a with `-w 3`                                            | `Segmented capture complete: 6 segment(s)`; output 300.000 s, 9000 frames, byte-identical to the `-w 1` segmented render |
 
 The Phase 0 mutation check is the same render with `PRODUCER_STREAMING_ENCODE_DURATION_CAP_ENABLED=true`: the gate line must flip to `"enabled":false,"reason":"duration_cap"` and the render must fail at the disk preflight on a host without ~75 GB free.
 
@@ -107,6 +107,20 @@ which is the whole reason the cadence exists.
 Determinism across restarts is also what makes the 2c retry safe: a segment
 re-captured on a fresh session is indistinguishable from one that never
 failed.
+
+### What the 2d gate is really testing
+
+That the worker count is invisible in the output. Measured 2026-09-17 with
+`-w 3`: byte-identical to the single-worker segmented render, 3 m 14 s against
+5 m 13 s (1.6x). Segments finish out of order, so a mismatch here would mean
+the concat list had picked up completion order.
+
+Do not run more than 3 Chrome fleets at once on a dev Mac (vault: kernel-panic
+history) — that is why this gate is `-w 3` and not `-w 4`.
+
+With the default recycle cadence of 3 and 6 segments over 3 workers, each
+worker only captures 2 segments, so no `segment browser recycled` line appears
+in this gate. Combine with `HF_SEGMENT_BROWSER_RECYCLE=1` to exercise both.
 
 ### Known cost: segmented capture is slower
 
