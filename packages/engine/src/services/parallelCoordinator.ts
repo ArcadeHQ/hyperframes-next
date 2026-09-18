@@ -983,6 +983,31 @@ export function resolveParallelDeVerifySamples(
   return Math.min(8, 4 + 2 * (workerCount - 1));
 }
 
+/**
+ * Whether one worker's failure ends the whole pool. On the disk path a
+ * transient death (Target closed, Page crashed) is not fatal: the
+ * orchestrator's adaptive retry re-captures that worker's missing frames. On
+ * the streaming path (`onFrameBuffer` present) there is no per-worker retry
+ * and the dead worker's frames are gone, so its peers would park in the
+ * ordered writer waiting for a frame that never comes until the producer's
+ * no-progress watchdog relabelled the death as a stall a minute later.
+ * Every non-cancelled failure is therefore pool-fatal there; `cancelled`
+ * means the pool was already aborted and there is nothing left to propagate.
+ */
+export function isPoolFatalWorkerFailure(failure: CaptureFailure, streaming: boolean): boolean {
+  if (streaming) return failure.kind !== "cancelled";
+  return isFatalCaptureFailure(failure);
+}
+
+export interface ParallelCaptureHooks {
+  /**
+   * The first pool-fatal worker failure, delivered BEFORE peers are aborted
+   * so a streaming caller can release anything parked on the dead worker's
+   * frame (the ordered writer) with the original error, not a stall.
+   */
+  onWorkerFailure?: (failure: CaptureFailure) => void;
+}
+
 export async function executeParallelCapture(
   serverUrl: string,
   workDir: string,
@@ -993,6 +1018,7 @@ export async function executeParallelCapture(
   onProgress?: (progress: ParallelProgress) => void,
   onFrameBuffer?: (frameIndex: number, buffer: Buffer, session: CaptureSession) => Promise<void>,
   config?: Partial<EngineConfig>,
+  hooks?: ParallelCaptureHooks,
 ): Promise<WorkerResult[]> {
   // `endFrame - startFrame` is the correct per-task frame count for contiguous
   // tasks (stride 1), but for interleaved tasks (stride = workerCount) each
@@ -1050,8 +1076,9 @@ export async function executeParallelCapture(
     : peerController.signal;
   let firstFatalFailure: CaptureFailure | undefined;
   const onFailure = (failure: CaptureFailure): void => {
-    if (firstFatalFailure || !isFatalCaptureFailure(failure)) return;
+    if (firstFatalFailure || !isPoolFatalWorkerFailure(failure, Boolean(onFrameBuffer))) return;
     firstFatalFailure = failure;
+    hooks?.onWorkerFailure?.(failure);
     peerController.abort(failure);
   };
   const results = await Promise.all(

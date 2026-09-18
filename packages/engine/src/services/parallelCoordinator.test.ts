@@ -7,6 +7,7 @@ import {
   flagSilentWorkerExits,
   formatWorkerFailure,
   isFfmpegInfrastructureFailure,
+  isPoolFatalWorkerFailure,
   selectVerifySampleIndicesForTask,
   selectWorkerDiagnostics,
   shouldDisableBrowserPoolForParallelWorker,
@@ -17,6 +18,7 @@ import {
   type WorkerResult,
 } from "./parallelCoordinator.js";
 import type { EngineConfig } from "../config.js";
+import { CaptureFailure } from "./captureFailure.js";
 
 describe("parallel worker phase deadline", () => {
   it("fails a wedged operation with phase and browser diagnostics before the aggregate watchdog", async () => {
@@ -510,5 +512,27 @@ describe("isFfmpegInfrastructureFailure", () => {
     expect(isFfmpegInfrastructureFailure(undefined)).toBe(false);
     expect(isFfmpegInfrastructureFailure("psnr broken")).toBe(false);
     expect(isFfmpegInfrastructureFailure(42)).toBe(false);
+  });
+});
+
+describe("isPoolFatalWorkerFailure", () => {
+  const failure = (kind: CaptureFailure["kind"]) => new CaptureFailure({ kind, message: kind });
+
+  it("keeps the disk path's tolerance: transient deaths are retried per worker, not pool-fatal", () => {
+    expect(isPoolFatalWorkerFailure(failure("transient_browser"), false)).toBe(false);
+    expect(isPoolFatalWorkerFailure(failure("protocol_timeout"), false)).toBe(false);
+    expect(isPoolFatalWorkerFailure(failure("cancelled"), false)).toBe(false);
+    expect(isPoolFatalWorkerFailure(failure("authoring"), false)).toBe(true);
+    expect(isPoolFatalWorkerFailure(failure("io"), false)).toBe(true);
+  });
+
+  it("makes every non-cancelled failure pool-fatal on the streaming path", () => {
+    // No per-worker retry exists there; the dead worker's frames are gone and
+    // its peers would otherwise park until the watchdog relabels the death.
+    expect(isPoolFatalWorkerFailure(failure("transient_browser"), true)).toBe(true);
+    expect(isPoolFatalWorkerFailure(failure("protocol_timeout"), true)).toBe(true);
+    expect(isPoolFatalWorkerFailure(failure("authoring"), true)).toBe(true);
+    // Cancelled means the pool is already aborting: nothing to propagate.
+    expect(isPoolFatalWorkerFailure(failure("cancelled"), true)).toBe(false);
   });
 });
