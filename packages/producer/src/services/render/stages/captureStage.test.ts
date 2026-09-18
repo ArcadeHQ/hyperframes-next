@@ -51,7 +51,14 @@ describe("disk capture capacity", () => {
     expect(message).toContain("Disk capture may need");
     expect(message).toContain("--workers 1");
     expect(message).toContain("--low-memory-mode");
-    expect(message).not.toContain("PRODUCER_STREAMING_ENCODE_MAX_DURATION_SECONDS");
+    // Every override that can land an otherwise-streaming render here, so the
+    // message explains the case the reader is actually in. The duration cap
+    // matters because it sends even a --workers 1 render to disk, which the
+    // pre-Phase-1 wording told them to "fix" with --workers 1.
+    expect(message).toContain("HF_CAPTURE_PARALLEL_STREAM=true");
+    expect(message).toContain("PRODUCER_STREAMING_ENCODE_DURATION_CAP_ENABLED=true");
+    expect(message).toContain("png-sequence");
+    expect(message).not.toContain("PRODUCER_STREAMING_ENCODE_MAX_DURATION_SECONDS if streaming");
   });
 
   it("exposes the same 90% headroom decision to fallback planning", () => {
