@@ -3122,6 +3122,126 @@ describe("initSandboxRuntimeModular", () => {
     delete (window as Window & { __hfLottie?: unknown[] }).__hfLottie;
   });
 
+  describe("a root with no data-duration and no timeline takes its length from its clips", () => {
+    const mountRoot = (children: string) => {
+      document.body.innerHTML = `<div data-composition-id="main" data-root="true" data-start="0" data-width="1920" data-height="1080">${children}</div>`;
+      window.__timelines = {};
+      initSandboxRuntimeModular();
+    };
+
+    it("counts a timed image at the dropped-image default and reports the derived source", () => {
+      mountRoot('<img id="a" data-start="2" src="a.png" />');
+      expect(window.__player?.getDuration()).toBe(5);
+      expect(window.__hf?.durationSource).toEqual({
+        source: "derived",
+        seconds: 5,
+        pendingClips: 0,
+      });
+    });
+
+    it("counts a plain clip with data-start and data-duration", () => {
+      mountRoot('<div class="clip" data-start="1" data-duration="4"></div>');
+      expect(window.__player?.getDuration()).toBe(5);
+    });
+
+    it("stays at zero while a video's length is pending, so a renderer never locks in a short one", () => {
+      mountRoot(
+        '<div class="clip" data-start="0" data-duration="2"></div><video data-start="0"></video>',
+      );
+      expect(window.__player?.getDuration()).toBe(0);
+      expect(window.__hf?.durationSource).toEqual({
+        source: "unresolved",
+        seconds: null,
+        pendingClips: 1,
+      });
+    });
+
+    it("stays at zero while a sub-composition's own length is not known yet", () => {
+      mountRoot(
+        '<div class="clip" data-start="0" data-duration="2"></div><div data-composition-id="sub" data-start="0"></div>',
+      );
+      expect(window.__player?.getDuration()).toBe(0);
+      expect(window.__hf?.durationSource?.pendingClips).toBe(1);
+    });
+
+    it("stays at zero while a loaded Lottie has registered no animation, instead of locking in the clip's length", () => {
+      const lottieWindow = window as Window & { lottie?: unknown };
+      lottieWindow.lottie = { getRegisteredAnimations: () => [] };
+      try {
+        mountRoot('<div class="clip" data-start="0" data-duration="2"></div>');
+        expect(window.__player?.getDuration()).toBe(0);
+        expect(window.__hf?.durationSource).toEqual({
+          source: "unresolved",
+          seconds: null,
+          pendingClips: 1,
+        });
+      } finally {
+        delete lottieWindow.lottie;
+      }
+    });
+
+    it("treats a declared data-lottie-src or a loaded DotLottie as a pending clip too", () => {
+      mountRoot(
+        '<div class="clip" data-start="0" data-duration="2"></div><div data-lottie-src="a.json"></div>',
+      );
+      expect(window.__player?.getDuration()).toBe(0);
+      const dotLottieWindow = window as Window & { DotLottie?: unknown };
+      dotLottieWindow.DotLottie = class {};
+      try {
+        mountRoot('<div class="clip" data-start="0" data-duration="2"></div>');
+        expect(window.__hf?.durationSource?.pendingClips).toBe(1);
+      } finally {
+        delete dotLottieWindow.DotLottie;
+      }
+    });
+
+    it("uses the Lottie's own length once it is registered, not the clips' length", () => {
+      const lottieWindow = window as Window & { lottie?: unknown; __hfLottie?: unknown[] };
+      lottieWindow.lottie = { getRegisteredAnimations: () => [] };
+      lottieWindow.__hfLottie = [
+        { play: () => {}, pause: () => {}, totalFrames: 150, frameRate: 30 },
+      ];
+      try {
+        mountRoot('<div class="clip" data-start="0" data-duration="2"></div>');
+        expect(window.__player?.getDuration()).toBe(5);
+        expect(window.__hf?.durationSource).toBeUndefined();
+      } finally {
+        delete lottieWindow.lottie;
+        delete lottieWindow.__hfLottie;
+      }
+    });
+
+    it("posts the derived-length diagnostic only for a derived length", () => {
+      const spy = vi.spyOn(window, "postMessage");
+      const codes = () =>
+        spy.mock.calls
+          .map(([message]) => (message as { code?: string } | undefined)?.code)
+          .filter((code) => code === "composition_duration_derived");
+      mountRoot("<p>static</p>");
+      expect(codes()).toHaveLength(0);
+      mountRoot('<div class="clip" data-start="0" data-duration="2"></div>');
+      expect(codes()).toHaveLength(1);
+    });
+
+    it("reports no derived source when a timeline supplies the length", () => {
+      mountRoot('<div class="clip" data-start="0" data-duration="2"></div>');
+      expect(window.__hf?.durationSource?.source).toBe("derived");
+      document.body.innerHTML = "";
+      window.__timelines = {};
+      document.body.innerHTML =
+        '<div data-composition-id="main" data-root="true" data-start="0" data-duration="8"></div>';
+      initSandboxRuntimeModular();
+      expect(window.__player?.getDuration()).toBe(8);
+      expect(window.__hf?.durationSource).toBeUndefined();
+    });
+
+    it("stays at zero, reported unresolved, when there is no timed content", () => {
+      mountRoot("<p>static</p>");
+      expect(window.__player?.getDuration()).toBe(0);
+      expect(window.__hf?.durationSource?.source).toBe("unresolved");
+    });
+  });
+
   it("regression: a GSAP timeline's duration is unaffected by adapter duration inference", () => {
     // A GSAP composition can legitimately have an incidental, short CSS
     // animation running alongside the timeline (e.g. a decorative shimmer).
