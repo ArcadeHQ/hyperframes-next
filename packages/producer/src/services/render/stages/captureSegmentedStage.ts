@@ -262,7 +262,10 @@ const DEFAULT_DEPS: SegmentedStageDeps = {
   spawnEncoder: spawnStreamingEncoder,
   captureFrame: captureFrameToBuffer,
   concat: concatVideoFiles,
-  closeSession: closeCaptureSession,
+  // Through the import binding, not captured: a value captured at module load
+  // is invisible to a test that swaps the engine module after this file has
+  // been evaluated (bun updates live bindings, not copies).
+  closeSession: (session) => closeCaptureSession(session),
   removeFile: (path) => rmSync(path, { force: true }),
 };
 
