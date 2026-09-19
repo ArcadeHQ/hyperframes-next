@@ -2432,8 +2432,60 @@ export async function closeOrphanedProbeForRetry(
  * machinery; both DE predicates independently require useDrawElement, making
  * the two routers mutually exclusive by construction.
  */
+/**
+ * The capture mode each parallel worker will launch with, mirroring the
+ * engine's `preMode` (frameCapture.ts): BeginFrame only on Linux with
+ * chrome-headless-shell, at DPR 1, with no forced screenshot. The engine's
+ * `drawElementTransparent` term is absent because the router requires
+ * `!useDrawElement`.
+ *
+ * Deliberately stricter than {@link resolveObservedCaptureMode}, which knows
+ * only the platform and so calls Linux-with-system-Chrome and Linux-at-DPR>1
+ * "beginframe" when the engine actually launches screenshot. The default-on
+ * decision keys on this, so being stricter only narrows what is enabled by
+ * default. One case remains that this cannot see: the engine's concrete
+ * software-GPU clamp can still move a Linux headless-shell render to
+ * screenshot. Those renders are inside the cohort the default was measured
+ * on, since the telemetry label uses the looser predicate.
+ */
+export function resolveParallelCaptureMode(args: {
+  platform: NodeJS.Platform;
+  /** A chrome-headless-shell binary was resolved for this render. */
+  headlessShell: boolean;
+  forceScreenshot: boolean;
+  deviceScaleFactor?: number;
+}): "screenshot" | "beginframe" {
+  const supersampling = (args.deviceScaleFactor ?? 1) > 1;
+  return args.headlessShell && args.platform === "linux" && !args.forceScreenshot && !supersampling
+    ? "beginframe"
+    : "screenshot";
+}
+
+/**
+ * Non-DE parallel-stream router switch. Default ON for BeginFrame capture
+ * (Phase 1 of the long-form render plan): those multi-worker mp4/mov renders
+ * stream through the interleaved writer instead of writing raw RGBA frames to
+ * disk, and their opt-in cohort fails at 0.05%. Screenshot capture stays
+ * opt-in — its opt-in cohort fails at 5.5% against a ~1.1% baseline, in two
+ * classes the streaming path owns (the parallel stall watchdog hard-fails
+ * with no retry; a dying encoder surfaces as a bare write EPIPE). Flipping it
+ * waits on those being fixed.
+ *
+ * Off-spellings match {@link isDeParallelRouterEnabled} so the two kill
+ * switches cannot disagree; any other explicit value is an opt-in.
+ */
+export function isCaptureParallelStreamRouterEnabled(
+  env: Readonly<Record<string, string | undefined>>,
+  resolvedMode: "screenshot" | "beginframe",
+): boolean {
+  const raw = env.HF_CAPTURE_PARALLEL_STREAM?.trim().toLowerCase();
+  if (raw === undefined || raw === "") return resolvedMode === "beginframe";
+  if (raw === "false" || raw === "0" || raw === "off" || raw === "no") return false;
+  return true;
+}
+
 export function shouldStreamParallelCapture(args: {
-  /** HF_CAPTURE_PARALLEL_STREAM === "true" — kill switch, default OFF. */
+  /** Router switch for this render — see isCaptureParallelStreamRouterEnabled. */
   routerEnabled: boolean;
   workerCount: number;
   /** cfg.useDrawElement AFTER resolveConfig clamps. */
@@ -3847,7 +3899,16 @@ async function executeRenderPipeline(input: {
     // (both DE predicates require useDrawElement; this requires its negation).
     // Reads `cfg.useDrawElement` after the clamp above, so it sees the
     // capture mode this render will actually use.
-    const captureParallelStreamRouterEnabled = process.env.HF_CAPTURE_PARALLEL_STREAM === "true";
+    const parallelCaptureMode = resolveParallelCaptureMode({
+      platform: process.platform,
+      headlessShell: resolveHeadlessShellPath(cfg) !== null,
+      forceScreenshot: captureForceScreenshot,
+      deviceScaleFactor: captureOptions.deviceScaleFactor,
+    });
+    const captureParallelStreamRouterEnabled = isCaptureParallelStreamRouterEnabled(
+      process.env,
+      parallelCaptureMode,
+    );
     const captureParallelStreamArgs = {
       workerCount,
       useDrawElement: cfg.useDrawElement,
@@ -3861,12 +3922,10 @@ async function executeRenderPipeline(input: {
     });
     if (captureParallelStreamEligible) {
       captureParallelStreamForced = true;
-      // Which mode will stream: the engine picks beginframe only on Linux with
-      // headless-shell and no forced screenshot (frameCapture.ts preMode);
-      // everything else is screenshot. Recorded for telemetry cohorting.
-      // Same predicate as the observability field — use the one helper so the
-      // two cannot drift if the router's modes ever change.
-      const captureParallelStream = resolveObservedCaptureMode(captureForceScreenshot);
+      // Which mode will stream — the same value the enablement decision used,
+      // so the routed cohort in telemetry cannot disagree with the predicate
+      // that routed it.
+      const captureParallelStream = parallelCaptureMode;
       log.info(
         `[Render] Parallel ${captureParallelStream} capture will stream to the encoder ` +
           `(interleaved, ${workerCount} workers) instead of the disk path. ` +
@@ -3881,11 +3940,11 @@ async function executeRenderPipeline(input: {
         `parallel ${captureParallelStream} capture routed to streaming`,
       );
     } else if (shouldStreamParallelCapture({ routerEnabled: true, ...captureParallelStreamArgs })) {
-      // The kill switch is the ONLY failed gate: emit a passive cohort-sizing
-      // signal (capture_parallel_stream = "eligible_off") so the default-off
-      // soak can measure how many fleet renders WOULD route before anyone
-      // enables the flag. Observability-only — no behavior change, no log
-      // noise on the default path.
+      // The router switch is the ONLY failed gate: emit a passive cohort-sizing
+      // signal (capture_parallel_stream = "eligible_off"). Post-split this is
+      // the screenshot-capture cohort held back by the default plus anyone who
+      // set the kill switch — i.e. exactly the population the Phase 1b flip
+      // would move. Observability-only, no log noise on the default path.
       updateCaptureObservability({ captureParallelStream: "eligible_off" });
     }
 

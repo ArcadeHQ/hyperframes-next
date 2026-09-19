@@ -53,6 +53,8 @@ import {
   shouldClampDefaultDrawElement,
   shouldPreferParallelDrawElement,
   shouldPreferSingleWorkerDrawElement,
+  isCaptureParallelStreamRouterEnabled,
+  resolveParallelCaptureMode,
   shouldStreamParallelCapture,
   shouldUseStreamingEncode,
   resolveObservedCaptureMode,
@@ -3315,6 +3317,66 @@ describe("sequential capture stall recovery", () => {
   });
 });
 
+describe("resolveParallelCaptureMode", () => {
+  const beginframe = {
+    platform: "linux" as NodeJS.Platform,
+    headlessShell: true,
+    forceScreenshot: false,
+    deviceScaleFactor: 1,
+  };
+
+  it("reports beginframe only for linux headless-shell at DPR 1 without forceScreenshot", () => {
+    expect(resolveParallelCaptureMode(beginframe)).toBe("beginframe");
+  });
+
+  it("reports screenshot wherever the engine's preMode would", () => {
+    expect(resolveParallelCaptureMode({ ...beginframe, platform: "darwin" })).toBe("screenshot");
+    expect(resolveParallelCaptureMode({ ...beginframe, platform: "win32" })).toBe("screenshot");
+    // System Chrome on linux: resolveObservedCaptureMode calls this beginframe,
+    // the engine launches screenshot. Getting this wrong would default-enable
+    // the router for a cohort whose real path is the screenshot one.
+    expect(resolveParallelCaptureMode({ ...beginframe, headlessShell: false })).toBe("screenshot");
+    expect(resolveParallelCaptureMode({ ...beginframe, forceScreenshot: true })).toBe("screenshot");
+    // Supersampling: BeginFrame ignores deviceScaleFactor, so preMode falls back.
+    expect(resolveParallelCaptureMode({ ...beginframe, deviceScaleFactor: 2 })).toBe("screenshot");
+  });
+
+  it("treats an unset deviceScaleFactor as 1", () => {
+    expect(resolveParallelCaptureMode({ ...beginframe, deviceScaleFactor: undefined })).toBe(
+      "beginframe",
+    );
+  });
+});
+
+describe("isCaptureParallelStreamRouterEnabled", () => {
+  it("is on by default only where capture will run BeginFrame", () => {
+    expect(isCaptureParallelStreamRouterEnabled({}, "beginframe")).toBe(true);
+    // macOS/Windows screenshot capture stays opt-in: its opt-in cohort runs a
+    // 5.5% error rate against a ~1.1% baseline (stall watchdog / EPIPE class).
+    expect(isCaptureParallelStreamRouterEnabled({}, "screenshot")).toBe(false);
+    expect(
+      isCaptureParallelStreamRouterEnabled({ HF_CAPTURE_PARALLEL_STREAM: "" }, "screenshot"),
+    ).toBe(false);
+  });
+
+  it("honours the explicit opt-in for either mode", () => {
+    expect(
+      isCaptureParallelStreamRouterEnabled({ HF_CAPTURE_PARALLEL_STREAM: "true" }, "screenshot"),
+    ).toBe(true);
+    expect(
+      isCaptureParallelStreamRouterEnabled({ HF_CAPTURE_PARALLEL_STREAM: " TRUE " }, "screenshot"),
+    ).toBe(true);
+  });
+
+  it("honours the kill switch, using the same off-spellings as the DE router", () => {
+    for (const off of ["false", "FALSE", "0", "off", "no"]) {
+      expect(
+        isCaptureParallelStreamRouterEnabled({ HF_CAPTURE_PARALLEL_STREAM: off }, "beginframe"),
+      ).toBe(false);
+    }
+  });
+});
+
 describe("shouldStreamParallelCapture (non-DE parallel streaming router)", () => {
   const eligible = {
     routerEnabled: true,
@@ -3329,7 +3391,7 @@ describe("shouldStreamParallelCapture (non-DE parallel streaming router)", () =>
     expect(shouldStreamParallelCapture(eligible)).toBe(true);
   });
 
-  it("is disabled by default (kill switch off is the shipped default)", () => {
+  it("honours the kill switch when the caller passes routerEnabled=false", () => {
     expect(shouldStreamParallelCapture({ ...eligible, routerEnabled: false })).toBe(false);
   });
 
