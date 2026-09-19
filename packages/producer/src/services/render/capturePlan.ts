@@ -51,7 +51,21 @@ export interface HdrLayeredCapturePlan extends CapturePlanBase {
   readonly forceParallelStream: false;
 }
 
-export type CapturePlan = SdrStreamingCapturePlan | SdrDiskCapturePlan | HdrLayeredCapturePlan;
+/**
+ * Long-form capture (spec §5 Phase 2): the frame range is split into
+ * closed-GOP segments, each streamed into its own encoder and concat-copied,
+ * so scratch is encoded video and a crash costs one segment.
+ */
+export interface SdrSegmentedCapturePlan extends CapturePlanBase {
+  readonly kind: "sdr_segmented";
+  readonly forceParallelStream: false;
+}
+
+export type CapturePlan =
+  | SdrStreamingCapturePlan
+  | SdrDiskCapturePlan
+  | HdrLayeredCapturePlan
+  | SdrSegmentedCapturePlan;
 
 /**
  * Telemetry name for the stage a plan runs on. Exhaustive over `CapturePlan`,
@@ -66,6 +80,8 @@ export function capturePathForPlanKind(kind: CapturePlan["kind"]): CapturePath {
       return "disk";
     case "hdr_layered":
       return "hdr_layered";
+    case "sdr_segmented":
+      return "segmented";
   }
 }
 
@@ -78,6 +94,8 @@ export interface CreateCapturePlanInput {
   usePageSideCompositing: boolean;
   hasHdrContent: boolean;
   needsAlpha: boolean;
+  /** Opt in to segmented capture; honoured only for single-worker streaming renders. */
+  useSegmentedCapture?: boolean;
   routing?: CaptureRouting;
 }
 
@@ -178,6 +196,9 @@ export function createCapturePlan(input: CreateCapturePlanInput): CapturePlan {
       forceParallelStream: false,
     });
   }
+  if (input.useStreamingEncode && input.useSegmentedCapture === true && input.workerCount === 1) {
+    return Object.freeze({ ...base, kind: "sdr_segmented", forceParallelStream: false });
+  }
   if (input.useStreamingEncode) {
     return Object.freeze({ ...base, kind: "sdr_streaming" });
   }
@@ -190,7 +211,32 @@ function revertedRouting(routing: CaptureRouting): CaptureRouting {
 }
 
 /** Pure, exhaustive capture fallback transition. The input plan is never mutated. */
+/**
+ * Segmented capture keeps segmenting through a drawElement failure (only the
+ * capture engine changes) but drops to a plain streaming render for anything
+ * else: no encoder means no per-segment encoder either, and until Phase 2c
+ * adds per-segment retry a capture failure has to retry the whole render.
+ */
+function replanSegmentedAfterFailure(
+  plan: SdrSegmentedCapturePlan,
+  failure: CapturePlanFailure,
+): CapturePlan {
+  const keepSegmenting =
+    failure.kind === "draw_element_verification" || failure.kind === "draw_element_capture";
+  return createCapturePlan({
+    ...plan,
+    forceScreenshot: keepSegmenting || failure.kind === "capture_failure",
+    useStreamingEncode: true,
+    useLayeredComposite: false,
+    useSegmentedCapture: keepSegmenting,
+    forceParallelStream: false,
+    routing: revertedRouting(plan.routing),
+  });
+}
+
 export function replanAfterFailure(plan: CapturePlan, failure: CapturePlanFailure): CapturePlan {
+  // Before the sdr_streaming guard below, which would otherwise throw.
+  if (plan.kind === "sdr_segmented") return replanSegmentedAfterFailure(plan, failure);
   // Disk-path drawElement self-verification (parallel disk workers under the
   // explicit fast-capture opt-in) can also trip — the retry stays on the disk
   // path but forces the screenshot baseline.

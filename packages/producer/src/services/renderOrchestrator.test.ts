@@ -54,6 +54,7 @@ import {
   shouldPreferParallelDrawElement,
   shouldPreferSingleWorkerDrawElement,
   isCaptureParallelStreamRouterEnabled,
+  isSegmentedCaptureRequested,
   resolveParallelCaptureMode,
   shouldStreamParallelCapture,
   shouldUseStreamingEncode,
@@ -3345,6 +3346,19 @@ describe("resolveParallelCaptureMode", () => {
     expect(resolveParallelCaptureMode({ ...beginframe, deviceScaleFactor: undefined })).toBe(
       "beginframe",
     );
+  });
+});
+
+describe("isSegmentedCaptureRequested", () => {
+  it("is opt-in via HF_SEGMENTED_CAPTURE=true", () => {
+    expect(isSegmentedCaptureRequested({})).toBe(false);
+    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "true" })).toBe(true);
+    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: " TRUE " })).toBe(true);
+    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "false" })).toBe(false);
+    // Phase 2a is opt-in only: anything that is not an explicit "true" is off,
+    // including the values Phase 2d will later treat as a kill switch.
+    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "1" })).toBe(false);
+    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "" })).toBe(false);
   });
 });
 

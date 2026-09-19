@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  capturePathForPlanKind,
   createCapturePlan,
   drawElementVerificationFailure,
   replanAfterFailure,
@@ -372,5 +373,65 @@ describe("CapturePlan", () => {
     expect(() => replanAfterFailure(disk, { kind: "streaming_unavailable" })).toThrow(
       "Cannot apply streaming_unavailable to sdr_disk",
     );
+  });
+});
+
+describe("sdr_segmented capture plan", () => {
+  const segmented = {
+    workerCount: 1,
+    forceScreenshot: false,
+    forceParallelStream: false,
+    useStreamingEncode: true,
+    useLayeredComposite: false,
+    usePageSideCompositing: false,
+    hasHdrContent: false,
+    needsAlpha: false,
+    useSegmentedCapture: true,
+  };
+
+  it("selects segmented capture only for single-worker streaming-eligible renders", () => {
+    const plan = createCapturePlan(segmented);
+    expect(plan).toMatchObject({
+      kind: "sdr_segmented",
+      workerCount: 1,
+      forceParallelStream: false,
+    });
+    expect(Object.isFrozen(plan)).toBe(true);
+    expect(createCapturePlan({ ...segmented, workerCount: 3 }).kind).toBe("sdr_streaming");
+  });
+
+  it("does not segment when streaming is off or the route is layered", () => {
+    expect(createCapturePlan({ ...segmented, useStreamingEncode: false }).kind).toBe("sdr_disk");
+    expect(createCapturePlan({ ...segmented, useLayeredComposite: true }).kind).toBe("hdr_layered");
+  });
+
+  it("reports its own capture path", () => {
+    expect(capturePathForPlanKind("sdr_segmented")).toBe("segmented");
+  });
+
+  it("falls back from segmented to plain streaming when the encoder is unavailable", () => {
+    const initial = createCapturePlan(segmented);
+    const next = replanAfterFailure(initial, { kind: "streaming_unavailable" });
+    expect(next.kind).toBe("sdr_streaming");
+    // The input plan is never mutated.
+    expect(initial.kind).toBe("sdr_segmented");
+  });
+
+  it("keeps segmenting but drops to screenshot after a drawElement failure", () => {
+    const next = replanAfterFailure(createCapturePlan(segmented), {
+      kind: "draw_element_capture",
+    });
+    expect(next).toMatchObject({ kind: "sdr_segmented", forceScreenshot: true });
+  });
+
+  it("drops segmentation after a plain capture failure instead of throwing", () => {
+    // Until Phase 2c adds per-segment retry, the whole render retries; it must
+    // reach a plan rather than the "cannot apply" throw that guards the
+    // non-streaming kinds.
+    const next = replanAfterFailure(createCapturePlan(segmented), {
+      kind: "capture_failure",
+      memoryExhaustion: false,
+    });
+    expect(next).toMatchObject({ kind: "sdr_streaming", forceScreenshot: true });
   });
 });
