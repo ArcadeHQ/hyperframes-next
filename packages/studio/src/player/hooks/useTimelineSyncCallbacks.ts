@@ -17,7 +17,9 @@ import { buildMissingCompositionElements } from "../lib/timelineIframeHelpers";
 import { acceptedRuntimeMessageFps } from "../lib/runtimeProtocol";
 import {
   buildTimelineElementsFromClips,
+  syncManifestTimeline,
   clipTreeParentMap,
+  collectTopLevelElementIds,
   collectSubCompositionDomChildren,
   collectSubCompositionHostState,
   hydrateTimelineFromPreview,
@@ -26,7 +28,6 @@ import {
   sanitizeDurationSeconds,
   seekAdapterToRestorePoint,
   syncAdapterDuration,
-  withImplicitDomLayers,
   type RuntimeTimelineMessage,
 } from "./timelineSyncHydration";
 
@@ -114,9 +115,7 @@ export function useTimelineSyncCallbacks({
   // Convert a runtime timeline message (from iframe postMessage) into TimelineElements
   const processTimelineMessage = useCallback(
     (data: RuntimeTimelineMessage) => {
-      if (!data.clips || data.clips.length === 0) {
-        return;
-      }
+      if (!data.clips) return;
 
       usePlayerStore.getState().setClipManifest(data.clips);
 
@@ -131,11 +130,13 @@ export function useTimelineSyncCallbacks({
         const parentMap = clipTreeParentMap(iframeRef.current?.contentWindow ?? null);
         const domClipChildren = collectSubCompositionDomChildren(iframeDoc, data.clips, parentMap);
         usePlayerStore.getState().setClipParentMap(parentMap);
+        usePlayerStore.getState().setTopLevelIds(collectTopLevelElementIds(iframeDoc));
         usePlayerStore.getState().setDomClipChildren(domClipChildren);
         usePlayerStore
           .getState()
           .setSubCompositionHostState(collectSubCompositionHostState(iframeDoc, data.clips));
       } catch {
+        usePlayerStore.getState().setTopLevelIds(null);
         // cross-origin or __clipTree not available — maps stay empty
       }
 
@@ -150,14 +151,12 @@ export function useTimelineSyncCallbacks({
         manifestDurationSeconds: data.durationInFrames / acceptedRuntimeMessageFps(data),
         authoredRootDurationSeconds: readTimelineDurationFromDocument(iframeDoc),
       });
-      const timelineEls = withImplicitDomLayers(
+      syncManifestTimeline(
         els,
-        iframeDoc,
-        newDuration > 0 ? newDuration : usePlayerStore.getState().duration,
+        newDuration,
+        usePlayerStore.getState().duration,
+        syncTimelineElements,
       );
-      if (timelineEls.length > 0) {
-        syncTimelineElements(timelineEls, newDuration > 0 ? newDuration : undefined);
-      }
     },
     [iframeRef, syncTimelineElements],
   );
