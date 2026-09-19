@@ -161,13 +161,20 @@ export interface RenderCaptureObservability {
   /** Worker count the resolver would have used absent the router; undefined if it never fired. */
   dePreRouterWorkers?: number;
   /**
-   * Non-DE parallel-streaming router outcome (HF_CAPTURE_PARALLEL_STREAM):
-   * "screenshot" | "beginframe" — the render passed every gate AND the kill
-   * switch was on, so it was routed through the interleaved streaming encoder
-   * (the value is the capture mode that streamed); "eligible_off" — the render
-   * passed every gate EXCEPT the kill switch (passive cohort-sizing signal for
-   * the default-off soak: how many renders WOULD route if enabled). Absent =
+   * Non-DE parallel-streaming router outcome. "screenshot" | "beginframe" —
+   * the render passed every gate and the router was on for its capture mode
+   * (BeginFrame by default; screenshot only with HF_CAPTURE_PARALLEL_STREAM
+   * set), so it streamed through the interleaved encoder; the value is the
+   * mode that streamed. "eligible_off" — the render passed every gate but the
+   * router was off for it: the screenshot cohort the mode split holds back,
+   * plus explicit HF_CAPTURE_PARALLEL_STREAM=false opt-outs. Absent =
    * ineligible regardless of the switch.
+   *
+   * The mode comes from resolveParallelCaptureMode, which mirrors the engine's
+   * launch rule, not from the platform-only captureMode label. The two can
+   * disagree on Linux with system Chrome or DPR > 1 (captureMode says
+   * "beginframe", this field says "screenshot"); this field is the one that
+   * matches what actually streamed.
    */
   captureParallelStream?: "screenshot" | "beginframe" | "eligible_off";
   protocolTimeoutMs?: number;
