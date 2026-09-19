@@ -54,7 +54,8 @@ import {
   shouldPreferParallelDrawElement,
   shouldPreferSingleWorkerDrawElement,
   isCaptureParallelStreamRouterEnabled,
-  isSegmentedCaptureRequested,
+  shouldSegmentCapture,
+  SEGMENTED_MIN_SECONDS_AFTER_SOAK,
   resolveParallelCaptureMode,
   shouldStreamParallelCapture,
   shouldUseStreamingEncode,
@@ -3349,16 +3350,68 @@ describe("resolveParallelCaptureMode", () => {
   });
 });
 
-describe("isSegmentedCaptureRequested", () => {
-  it("is opt-in via HF_SEGMENTED_CAPTURE=true", () => {
-    expect(isSegmentedCaptureRequested({})).toBe(false);
-    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "true" })).toBe(true);
-    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: " TRUE " })).toBe(true);
-    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "false" })).toBe(false);
-    // Phase 2a is opt-in only: anything that is not an explicit "true" is off,
-    // including the values Phase 2d will later treat as a kill switch.
-    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "1" })).toBe(false);
-    expect(isSegmentedCaptureRequested({ HF_SEGMENTED_CAPTURE: "" })).toBe(false);
+describe("shouldSegmentCapture", () => {
+  const base = {
+    env: {} as Record<string, string | undefined>,
+    durationSeconds: 900,
+    outputFormat: "mp4",
+    layeredOrEffectRoute: false,
+    streamingOk: true,
+  };
+
+  it("does not route on duration until the soak flip", () => {
+    // The threshold ships disabled: the release that introduces the route
+    // must not also change which route every long render takes.
+    expect(shouldSegmentCapture(base)).toBe(false);
+    expect(shouldSegmentCapture({ ...base, durationSeconds: 36_000 })).toBe(false);
+  });
+
+  it("routes long mp4/mov renders once a threshold is set", () => {
+    const env = { HF_SEGMENTED_MIN_SECONDS: String(SEGMENTED_MIN_SECONDS_AFTER_SOAK) };
+    expect(shouldSegmentCapture({ ...base, env })).toBe(true);
+    expect(shouldSegmentCapture({ ...base, env, outputFormat: "mov" })).toBe(true);
+    expect(shouldSegmentCapture({ ...base, env, durationSeconds: 599 })).toBe(false);
+    expect(shouldSegmentCapture({ ...base, env, durationSeconds: 600 })).toBe(true);
+  });
+
+  it("is forced at any duration by the explicit opt-in", () => {
+    expect(
+      shouldSegmentCapture({
+        ...base,
+        durationSeconds: 5,
+        env: { HF_SEGMENTED_CAPTURE: "true" },
+      }),
+    ).toBe(true);
+  });
+
+  it("honours the kill switch and the exclusions", () => {
+    const env = { HF_SEGMENTED_MIN_SECONDS: "60" };
+    expect(shouldSegmentCapture({ ...base, env: { ...env, HF_SEGMENTED_CAPTURE: "false" } })).toBe(
+      false,
+    );
+    // The kill switch beats the force flag's other spellings too.
+    expect(shouldSegmentCapture({ ...base, env: { HF_SEGMENTED_CAPTURE: "off" } })).toBe(false);
+    expect(shouldSegmentCapture({ ...base, env, outputFormat: "webm" })).toBe(false);
+    expect(shouldSegmentCapture({ ...base, env, outputFormat: "png-sequence" })).toBe(false);
+    expect(shouldSegmentCapture({ ...base, env, outputFormat: "hls" })).toBe(false);
+    expect(shouldSegmentCapture({ ...base, env, layeredOrEffectRoute: true })).toBe(false);
+    expect(shouldSegmentCapture({ ...base, env, streamingOk: false })).toBe(false);
+    // Even the explicit force cannot route an excluded output.
+    expect(
+      shouldSegmentCapture({
+        ...base,
+        env: { HF_SEGMENTED_CAPTURE: "true" },
+        outputFormat: "webm",
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores an unparseable threshold rather than routing on it", () => {
+    expect(shouldSegmentCapture({ ...base, env: { HF_SEGMENTED_MIN_SECONDS: "soon" } })).toBe(
+      false,
+    );
+    expect(shouldSegmentCapture({ ...base, env: { HF_SEGMENTED_MIN_SECONDS: "-5" } })).toBe(false);
+    expect(shouldSegmentCapture({ ...base, env: { HF_SEGMENTED_MIN_SECONDS: "0" } })).toBe(true);
   });
 });
 

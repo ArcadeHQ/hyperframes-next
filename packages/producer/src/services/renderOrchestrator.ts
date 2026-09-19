@@ -2501,11 +2501,52 @@ export function isCaptureParallelStreamRouterEnabled(
   return true;
 }
 
-/** Segmented capture opt-in (spec §5 Phase 2). Phase 2d makes it the default for long renders. */
-export function isSegmentedCaptureRequested(
-  env: Readonly<Record<string, string | undefined>>,
-): boolean {
-  return env.HF_SEGMENTED_CAPTURE?.trim().toLowerCase() === "true";
+/**
+ * The duration at which segmented capture is meant to become the default
+ * (spec §5 Phase 2d). Not the shipped default: that flip is its own release
+ * step, gated on the 40-minute soak, and shipping it alongside the rest of
+ * this work would change the route for every long render in the same release
+ * that introduced the route. Set `HF_SEGMENTED_MIN_SECONDS=600` to opt a
+ * fleet in ahead of the flip; flipping the constant below is the whole
+ * change when the soak passes.
+ */
+export const SEGMENTED_MIN_SECONDS_AFTER_SOAK = 600;
+
+/** No duration routes to segmented capture until the soak gate is cleared. */
+const DEFAULT_SEGMENTED_MIN_SECONDS = Number.POSITIVE_INFINITY;
+
+function resolveSegmentedMinSeconds(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.HF_SEGMENTED_MIN_SECONDS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SEGMENTED_MIN_SECONDS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SEGMENTED_MIN_SECONDS;
+}
+
+/**
+ * Whether this render captures in segments. The worker count is not an
+ * input: any count segments (Phase 2d), so nothing here consults it.
+ * `HF_SEGMENTED_CAPTURE=true`
+ * forces it at any duration and `=false` is the kill switch; otherwise it is
+ * the duration threshold above. The exclusions are the routes whose
+ * concat-copy or capture loop the segment contract does not cover: webm's VP9
+ * concat is fragile across ffmpeg versions, png-sequence and gif have no
+ * encoded video output, and HDR/shader-transition renders run their own
+ * compositor.
+ */
+export function shouldSegmentCapture(args: {
+  env: Readonly<Record<string, string | undefined>>;
+  durationSeconds: number;
+  outputFormat: string;
+  layeredOrEffectRoute: boolean;
+  /** shouldUseStreamingEncode(cfg, format, 1, duration) at the call site. */
+  streamingOk: boolean;
+}): boolean {
+  const raw = args.env.HF_SEGMENTED_CAPTURE?.trim().toLowerCase();
+  if (raw === "false" || raw === "0" || raw === "off" || raw === "no") return false;
+  if (!args.streamingOk || args.layeredOrEffectRoute) return false;
+  if (args.outputFormat !== "mp4" && args.outputFormat !== "mov") return false;
+  if (raw === "true") return true;
+  return args.durationSeconds >= resolveSegmentedMinSeconds(args.env);
 }
 
 export function shouldStreamParallelCapture(args: {
@@ -4145,12 +4186,13 @@ async function executeRenderPipeline(input: {
       // excluded routes are the ones whose concat-copy or capture loop the
       // segment contract does not cover (webm VP9 concat is fragile, HDR and
       // shader transitions run their own compositor).
-      useSegmentedCapture:
-        isSegmentedCaptureRequested(process.env) &&
-        workerCount === 1 &&
-        (outputFormat === "mp4" || outputFormat === "mov") &&
-        !hasHdrContent &&
-        !compiled.hasShaderTransitions,
+      useSegmentedCapture: shouldSegmentCapture({
+        env: process.env,
+        durationSeconds: job.duration,
+        outputFormat,
+        layeredOrEffectRoute: hasHdrContent || compiled.hasShaderTransitions,
+        streamingOk: shouldUseStreamingEncode(cfg, outputFormat, 1, job.duration),
+      }),
       useLayeredComposite,
       usePageSideCompositing: usePageSideCompositingForTransitions,
       hasHdrContent,
@@ -4398,6 +4440,7 @@ async function executeRenderPipeline(input: {
               dedupPerfs,
               segmentFrames,
               segmentDir,
+              workerCount: segmentedPlan.workerCount,
               browserRecycleEverySegments: resolveSegmentBrowserRecycle(process.env),
               completedSegments,
               onSegmentComplete: (entry) => {

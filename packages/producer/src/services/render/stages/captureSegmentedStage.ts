@@ -40,6 +40,7 @@ import { updateJobStatus } from "../shared.js";
 import { encoderFailureError } from "../encoderInterruption.js";
 import type { SdrSegmentedCapturePlan } from "../capturePlan.js";
 import { planSegments, type SegmentSlice } from "../segmentPlan.js";
+import { createSegmentQueue } from "../segmentQueue.js";
 import { isTargetLossError } from "../segmentRecycle.js";
 import {
   raceAgainstStall,
@@ -95,7 +96,17 @@ export interface CaptureSegmentedStageInput {
     path: string;
     bytes: number;
   }) => void;
-  /** Opens each session; defaults to reusing the probe session, then fresh ones. */
+  /** Parallel capture sessions pulling from one segment queue. Default 1. */
+  workerCount?: number;
+  /** Per-worker factory; takes precedence over sessionFactory when set. */
+  sessionFactoryForWorker?: (workerId: number) => SessionFactory;
+  /**
+   * Opens each session; defaults to reusing the probe session, then fresh
+   * ones. Without sessionFactoryForWorker every worker shares this one
+   * factory, so it must hand out a distinct session per create() call, as
+   * the default does; a factory that returns one shared session would have N
+   * workers driving one browser.
+   */
   sessionFactory?: SessionFactory;
   /** Recycle the browser every N segments; 0 or absent keeps one session. */
   browserRecycleEverySegments?: number;
@@ -114,7 +125,7 @@ export type CaptureSegmentedStageResult =
       encodeMs: number;
       probeSession: null;
       lastBrowserConsole: string[];
-      workerCount: 1;
+      workerCount: number;
       segments: number;
       segmentPaths: string[];
       /** Segments re-captured after a Chrome target loss. */
@@ -337,168 +348,241 @@ async function concatSegments(
   });
 }
 
+interface SegmentWorker {
+  id: number;
+  ctx: SegmentCaptureContext;
+  sessionSegments: number;
+  factory: SessionFactory;
+}
+
+/** Counters shared by every worker; JS is single-threaded, so += is safe. */
+interface SegmentTotals {
+  encodeMs: number;
+  segmentRetries: number;
+  browserRecycles: number;
+}
+
+/** Everything the per-worker helpers need, resolved once. */
+interface SegmentRun {
+  input: CaptureSegmentedStageInput;
+  deps: SegmentedStageDeps;
+  totals: SegmentTotals;
+  segments: readonly SegmentSlice[];
+  pending: readonly SegmentSlice[];
+  segmentDir: string;
+  skipSize: number;
+  workerCount: number;
+  recycleEvery: number;
+}
+
+async function createSegmentWorker(run: SegmentRun, id: number): Promise<SegmentWorker> {
+  const { input, deps } = run;
+  const factory =
+    input.sessionFactoryForWorker?.(id) ?? input.sessionFactory ?? defaultSessionFactory(input);
+  return {
+    id,
+    factory,
+    sessionSegments: 0,
+    ctx: {
+      session: await factory.create(),
+      job: input.job,
+      cfg: input.cfg,
+      totalFrames: input.totalFrames,
+      segmentCount: run.segments.length,
+      segmentDir: run.segmentDir,
+      skipped: run.skipSize,
+      streamingEncoderOptions: input.streamingEncoderOptions,
+      spawnEncoder: deps.spawnEncoder,
+      captureFrame: deps.captureFrame,
+      stallTimeoutMs: resolveCaptureStallTimeoutMs(),
+      abortSignal: input.abortSignal,
+      assertNotAborted: input.assertNotAborted,
+      onProgress: input.onProgress,
+      onSegmentComplete: input.onSegmentComplete,
+    },
+  };
+}
+
+/** Close this worker's browser and open a fresh one at a segment boundary. */
+async function recycleWorkerSession(
+  run: SegmentRun,
+  worker: SegmentWorker,
+  why: "cadence" | "retry",
+): Promise<void> {
+  // Counters are only valid while the session is live, so harvest before close.
+  run.input.dedupPerfs.push(getCapturePerfSummary(worker.ctx.session));
+  const memory = worker.ctx.session.chromeMemory?.stats();
+  await run.deps.closeSession(worker.ctx.session);
+  worker.ctx.session = await worker.factory.create();
+  worker.sessionSegments = 0;
+  if (why === "cadence") run.totals.browserRecycles += 1;
+  run.input.log.info(`[Render] segment browser recycled (${why})`, {
+    worker: worker.id,
+    rendererRssPeakMb: memory?.rendererRssPeakMb,
+    rssLastMb: memory?.rssLastMb,
+    samples: memory?.samples,
+  });
+}
+
+/**
+ * The encoder never started. Only a single-worker render can still fall back:
+ * with several workers in flight, other segments are already being encoded
+ * and a fallback would throw their work away.
+ */
+function onSegmentSpawnFailure(
+  run: SegmentRun,
+  err: SegmentEncoderSpawnError,
+  segment: SegmentSlice,
+): "fallback" {
+  if (run.workerCount > 1 || segment.index !== run.pending[0]?.index) throw err.reason;
+  run.input.log.warn(
+    "[Render] Segment encoder spawn failed; falling back to single-encoder streaming.",
+    {
+      error: err.message,
+      outputFormat: run.input.outputFormat,
+      segments: run.segments.length,
+      durationSeconds: run.input.job.duration,
+    },
+  );
+  return "fallback";
+}
+
+/**
+ * Chrome losing its target mid-capture is the one failure a fresh browser
+ * fixes; everything else reproduces, so retrying it only doubles the time to
+ * the same error. Once, then it propagates.
+ */
+async function retryAfterTargetLoss(
+  run: SegmentRun,
+  worker: SegmentWorker,
+  err: unknown,
+  segment: SegmentSlice,
+  segmentPath: string,
+): Promise<void> {
+  if (!isTargetLossError(err) || run.input.abortSignal?.aborted) throw err;
+  run.totals.segmentRetries += 1;
+  run.input.updateCaptureObservability?.({ segmentRetries: run.totals.segmentRetries });
+  run.input.log.warn(
+    `[Render] segment ${segment.index}: browser target lost; retrying once on a fresh session`,
+    { worker: worker.id, error: err instanceof Error ? err.message : String(err) },
+  );
+  run.deps.removeFile(segmentPath);
+  await recycleWorkerSession(run, worker, "retry");
+  run.totals.encodeMs += await captureSegment(worker.ctx, segment);
+}
+
+async function runOneSegment(
+  run: SegmentRun,
+  worker: SegmentWorker,
+  segment: SegmentSlice,
+): Promise<"done" | "fallback"> {
+  const segmentPath = segmentOutputPath(run.segmentDir, segment.index);
+  if (run.recycleEvery > 0 && worker.sessionSegments >= run.recycleEvery) {
+    await recycleWorkerSession(run, worker, "cadence");
+  }
+  run.input.updateCaptureObservability?.({
+    capturePath: "segmented",
+    segmentIndex: segment.index,
+  });
+  try {
+    run.totals.encodeMs += await captureSegment(worker.ctx, segment);
+  } catch (err) {
+    if (err instanceof SegmentEncoderSpawnError) return onSegmentSpawnFailure(run, err, segment);
+    await retryAfterTargetLoss(run, worker, err, segment, segmentPath);
+  }
+  worker.sessionSegments += 1;
+  return "done";
+}
+
 export async function runCaptureSegmentedStage(
   input: CaptureSegmentedStageInput,
 ): Promise<CaptureSegmentedStageResult> {
-  const {
-    workDir,
-    videoOnlyPath,
-    job,
-    totalFrames,
-    cfg,
-    log,
-    outputFormat,
-    streamingEncoderOptions,
-    abortSignal,
-    assertNotAborted,
-    onProgress,
-    dedupPerfs,
-    segmentFrames,
-    updateCaptureObservability,
-  } = input;
+  const { log, dedupPerfs, assertNotAborted } = input;
   const deps: SegmentedStageDeps = { ...DEFAULT_DEPS, ...input.deps };
 
-  const segments = planSegments(totalFrames, segmentFrames);
-  const segmentDir = input.segmentDir ?? join(workDir, "segments");
+  const segments = planSegments(input.totalFrames, input.segmentFrames);
+  const segmentDir = input.segmentDir ?? join(input.workDir, "segments");
   mkdirSync(segmentDir, { recursive: true });
   const skip = input.completedSegments ?? new Set<number>();
-  // The first segment that still has to be captured. Only it can fall back to
-  // the plain streaming path on a spawn failure; by any later one, encoded
-  // segments exist that a fallback would throw away.
-  const firstPending = segments.find((s) => !skip.has(s.index));
-  const factory = input.sessionFactory ?? defaultSessionFactory(input);
-  const recycleEvery = input.browserRecycleEverySegments ?? 0;
-
-  let lastBrowserConsole: string[] = [];
-  let encodeMs = 0;
-  let segmentRetries = 0;
-  let browserRecycles = 0;
-  let sessionSegments = 0;
-  const segmentPaths: string[] = [];
-
-  const ctx: SegmentCaptureContext = {
-    session: await factory.create(),
-    job,
-    cfg,
-    totalFrames,
-    segmentCount: segments.length,
-    segmentDir,
-    skipped: skip.size,
-    streamingEncoderOptions,
-    spawnEncoder: deps.spawnEncoder,
-    captureFrame: deps.captureFrame,
-    stallTimeoutMs: resolveCaptureStallTimeoutMs(),
-    abortSignal,
-    assertNotAborted,
-    onProgress,
-    onSegmentComplete: input.onSegmentComplete,
-  };
-
-  /** Close the current browser and open a fresh one at a segment boundary. */
-  const recycleSession = async (why: "cadence" | "retry"): Promise<void> => {
-    lastBrowserConsole = ctx.session.browserConsoleBuffer;
-    // Counters are only valid while the session is live, so harvest before close.
-    dedupPerfs.push(getCapturePerfSummary(ctx.session));
-    const memory = ctx.session.chromeMemory?.stats();
-    await deps.closeSession(ctx.session);
-    ctx.session = await factory.create();
-    sessionSegments = 0;
-    if (why === "cadence") browserRecycles += 1;
-    log.info(`[Render] segment browser recycled (${why})`, {
-      rendererRssPeakMb: memory?.rendererRssPeakMb,
-      rssLastMb: memory?.rssLastMb,
-      samples: memory?.samples,
-    });
-  };
-
-  /**
-   * One segment, with its cadence recycle and its single target-loss retry.
-   * Returns "fallback" only for a first-pending spawn failure, which is the
-   * one case the caller can still replan onto the plain streaming path.
-   */
-  /** The encoder never started. Only the first pending segment can fall back. */
-  const onSpawnFailure = (err: SegmentEncoderSpawnError, segment: SegmentSlice): "fallback" => {
-    if (segment.index !== firstPending?.index) throw err.reason;
-    log.warn("[Render] Segment encoder spawn failed; falling back to single-encoder streaming.", {
-      error: err.message,
-      outputFormat,
-      segments: segments.length,
-      durationSeconds: job.duration,
-    });
-    return "fallback";
-  };
-
-  /**
-   * Chrome losing its target mid-capture is the one failure a fresh browser
-   * fixes; everything else reproduces, so retrying it only doubles the time to
-   * the same error. Once, then it propagates.
-   */
-  const retryAfterTargetLoss = async (
-    err: unknown,
-    segment: SegmentSlice,
-    segmentPath: string,
-  ): Promise<void> => {
-    if (!isTargetLossError(err) || abortSignal?.aborted) throw err;
-    segmentRetries += 1;
-    updateCaptureObservability?.({ segmentRetries });
-    log.warn(
-      `[Render] segment ${segment.index}: browser target lost; retrying once on a fresh session`,
-      { error: err instanceof Error ? err.message : String(err) },
-    );
-    deps.removeFile(segmentPath);
-    await recycleSession("retry");
-    encodeMs += await captureSegment(ctx, segment);
-  };
-
-  const runSegment = async (segment: SegmentSlice): Promise<"done" | "fallback"> => {
-    const segmentPath = segmentOutputPath(segmentDir, segment.index);
-    if (recycleEvery > 0 && sessionSegments >= recycleEvery) await recycleSession("cadence");
-    updateCaptureObservability?.({ capturePath: "segmented", segmentIndex: segment.index });
-    try {
-      encodeMs += await captureSegment(ctx, segment);
-    } catch (err) {
-      if (err instanceof SegmentEncoderSpawnError) return onSpawnFailure(err, segment);
-      await retryAfterTargetLoss(err, segment, segmentPath);
+  const pending = segments.filter((s) => !skip.has(s.index));
+  for (const segment of segments) {
+    if (skip.has(segment.index)) {
+      log.info("[Render] segment skipped (resume)", { index: segment.index });
     }
-    sessionSegments += 1;
-    segmentPaths.push(segmentPath);
-    return "done";
+  }
+  const run: SegmentRun = {
+    input,
+    deps,
+    totals: { encodeMs: 0, segmentRetries: 0, browserRecycles: 0 },
+    segments,
+    pending,
+    segmentDir,
+    skipSize: skip.size,
+    workerCount: Math.max(1, input.workerCount ?? 1),
+    recycleEvery: input.browserRecycleEverySegments ?? 0,
+  };
+  const queue = createSegmentQueue(pending);
+  // Built from the plan, not from completion order: workers finish out of
+  // order, so the concat list must not depend on who finished when.
+  const segmentPaths = segments.map((s) => segmentOutputPath(segmentDir, s.index));
+  let fellBackToStreaming = false;
+
+  const workers: SegmentWorker[] = [];
+  for (let id = 0; id < run.workerCount; id++) workers.push(await createSegmentWorker(run, id));
+  const consoleOf = () => workers[0]?.ctx.session.browserConsoleBuffer ?? [];
+  let lastBrowserConsole: string[] = consoleOf();
+
+  /** Pull segments until the queue drains, another worker failed, or we fell back. */
+  const runWorkerLoop = async (worker: SegmentWorker): Promise<void> => {
+    for (;;) {
+      if (fellBackToStreaming) return;
+      assertNotAborted();
+      const segment = queue.next();
+      if (!segment) return;
+      if ((await runOneSegment(run, worker, segment)) === "fallback") {
+        fellBackToStreaming = true;
+        return;
+      }
+    }
   };
 
   try {
     assertNotAborted();
-    lastBrowserConsole = ctx.session.browserConsoleBuffer;
-
-    for (const segment of segments) {
-      assertNotAborted();
-      if (skip.has(segment.index)) {
-        segmentPaths.push(segmentOutputPath(segmentDir, segment.index));
-        log.info("[Render] segment skipped (resume)", { index: segment.index });
-        continue;
-      }
-      if ((await runSegment(segment)) === "fallback") return { success: false };
-    }
-
-    dedupPerfs.push(getCapturePerfSummary(ctx.session));
+    // allSettled, not all: closing a session out from under a worker that is
+    // still capturing orphans its ffmpeg and races the CDP connection, so
+    // every worker has to stop before the finally runs. The first error is
+    // rethrown below.
+    const outcomes = await Promise.allSettled(workers.map((w) => runWorkerLoop(w)));
+    for (const worker of workers) dedupPerfs.push(getCapturePerfSummary(worker.ctx.session));
+    const failure = outcomes.find((o) => o.status === "rejected");
+    if (failure && failure.status === "rejected") throw failure.reason;
   } catch (error) {
-    lastBrowserConsole = ctx.session.browserConsoleBuffer;
+    lastBrowserConsole = consoleOf();
     throw wrapCaptureStageError(error, lastBrowserConsole);
   } finally {
-    lastBrowserConsole = ctx.session.browserConsoleBuffer;
-    await deps.closeSession(ctx.session);
+    lastBrowserConsole = consoleOf();
+    for (const worker of workers) await deps.closeSession(worker.ctx.session);
   }
 
-  await concatSegments(deps.concat, segmentPaths, videoOnlyPath, abortSignal, cfg);
+  if (fellBackToStreaming) return { success: false };
+
+  await concatSegments(
+    deps.concat,
+    segmentPaths,
+    input.videoOnlyPath,
+    input.abortSignal,
+    input.cfg,
+  );
 
   return {
     success: true,
-    encodeMs,
+    encodeMs: run.totals.encodeMs,
     probeSession: null,
     lastBrowserConsole,
-    workerCount: 1,
+    workerCount: run.workerCount,
     segments: segments.length,
     segmentPaths,
-    segmentRetries,
-    browserRecycles,
+    segmentRetries: run.totals.segmentRetries,
+    browserRecycles: run.totals.browserRecycles,
   };
 }

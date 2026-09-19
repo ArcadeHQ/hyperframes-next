@@ -955,6 +955,36 @@ frame storage, the message names which of those applied; the usual fixes are
 | `PRODUCER_STREAMING_ENCODE_DURATION_CAP_ENABLED` | `false` | `true` restores the duration ceiling below                                              |
 | `PRODUCER_STREAMING_ENCODE_MAX_DURATION_SECONDS` | `240`   | The ceiling's value; inert unless the flag above is `true`, including the `0` ("never") setting |
 
+#### Segmented capture
+
+For long renders, capture can be split into fixed-size segments, each encoded
+by its own ffmpeg and stream-copied together at the end. It costs some speed
+against a single-encoder streaming render, and buys three things:
+
+- Scratch is encoded video rather than raw frames, at any duration.
+- The browser restarts at segment boundaries, so a session never accumulates
+  the tens of thousands of frames where Chrome starts losing its target.
+- A crash costs one segment. `--resume` re-runs the render and reuses the
+  segments a previous attempt finished, after re-validating each one; a
+  resumed render is byte-identical to an uninterrupted one.
+
+Segments live in `renders/.hf-segments/<hash>/`, where the hash covers
+everything that determines segment bytes, so changing the composition, fps,
+resolution, quality or segment size starts a fresh set instead of splicing
+mismatched encodes. The directory is deleted after a successful render unless
+`--keep-segments`, and deliberately kept after a failure, because that is what
+`--resume` reads next time.
+
+mp4 and mov only; png-sequence, gif, webm, HDR and shader-transition renders
+keep their existing routes.
+
+| Environment variable           | Default    | Effect                                                                                   |
+| ------------------------------ | ---------- | ------------------------------------------------------------------------------------------ |
+| `HF_SEGMENTED_CAPTURE`         | unset      | `true` segments any eligible render; `false` is the kill switch                          |
+| `HF_SEGMENTED_MIN_SECONDS`     | off        | Segment renders at least this long. Unset means duration never routes on its own          |
+| `HF_SEGMENT_FRAMES`            | `3000`     | Frames per segment (~100 s at 30 fps); minimum 30                                        |
+| `HF_SEGMENT_BROWSER_RECYCLE`   | `3`        | Restart the browser every N segments; `0` keeps one session for the whole render          |
+
 #### Render the same composition with different content
 
 Declare the variables on the composition root, read them inside it, then
