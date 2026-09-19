@@ -144,6 +144,7 @@ import {
 } from "./render/capturePlan.js";
 import { runCaptureSegmentedStage } from "./render/stages/captureSegmentedStage.js";
 import { resolveSegmentFrames } from "./render/segmentPlan.js";
+import { resolveSegmentBrowserRecycle } from "./render/segmentRecycle.js";
 import {
   computeSegmentPlanHash,
   probeSegmentFrameCount,
@@ -4397,6 +4398,7 @@ async function executeRenderPipeline(input: {
               dedupPerfs,
               segmentFrames,
               segmentDir,
+              browserRecycleEverySegments: resolveSegmentBrowserRecycle(process.env),
               completedSegments,
               onSegmentComplete: (entry) => {
                 segmentManifest.completed = [
@@ -4420,7 +4422,12 @@ async function executeRenderPipeline(input: {
           perfStages.encodeMs = segmentedRes.encodeMs;
           log.info(
             `[Render] Segmented capture complete: ${segmentedRes.segments} segment(s) concatenated.`,
+            {
+              segmentRetries: segmentedRes.segmentRetries,
+              browserRecycles: segmentedRes.browserRecycles,
+            },
           );
+          updateCaptureObservability({ segmentRetries: segmentedRes.segmentRetries });
           // Only after a successful capture: a failure leaves the directory
           // in place, because that is exactly what --resume reads next time.
           if (job.config.keepSegments !== true) {

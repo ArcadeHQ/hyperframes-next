@@ -434,4 +434,169 @@ describe("runCaptureSegmentedStage", () => {
     ).rejects.toThrow(/ffmpeg vanished/);
     expect(concat).not.toHaveBeenCalled();
   });
+
+  function okEncoder() {
+    return {
+      writeFrame: async () => true,
+      close: async () => ({ success: true, durationMs: 1, fileSize: 1 }),
+      getExitStatus: () => "success" as const,
+      getExitError: () => undefined,
+    };
+  }
+
+  function fakeSession(id: number) {
+    return {
+      id,
+      isInitialized: true,
+      browserConsoleBuffer,
+      options: { captureBeyondViewport: false },
+      workerEncodeEnabled: false,
+      captureMode: "screenshot" as const,
+    };
+  }
+
+  it("recycles the browser on the configured cadence", async () => {
+    const created: number[] = [];
+    const closed: number[] = [];
+    let next = 0;
+    const sessionFactory = {
+      create: async () => {
+        const s = fakeSession(next++);
+        created.push(s.id);
+        return s;
+      },
+    };
+    const result = await runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 6 }),
+      segmentFrames: 2,
+      segmentDir: join(fixtureRoot, "recycle"),
+      sessionFactory,
+      browserRecycleEverySegments: 1,
+      deps: {
+        spawnEncoder: mock(async () => okEncoder()),
+        captureFrame: mock(async () => ({ buffer: Buffer.alloc(1) })),
+        concat: mock(async () => ({ success: true as const })),
+        closeSession: mock(async (s: { id: number }) => {
+          closed.push(s.id);
+        }),
+        removeFile: () => {},
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error("unreachable");
+    // One session per segment: the first, then a recycle before segments 2 and 3.
+    expect(created).toEqual([0, 1, 2]);
+    expect(closed).toEqual([0, 1, 2]);
+    expect(result.browserRecycles).toBe(2);
+    expect(result.segmentRetries).toBe(0);
+  });
+
+  it("keeps one session when the cadence is 0", async () => {
+    const created: number[] = [];
+    let next = 0;
+    await runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 6 }),
+      segmentFrames: 2,
+      segmentDir: join(fixtureRoot, "norecycle"),
+      sessionFactory: {
+        create: async () => {
+          const s = fakeSession(next++);
+          created.push(s.id);
+          return s;
+        },
+      },
+      browserRecycleEverySegments: 0,
+      deps: {
+        spawnEncoder: mock(async () => okEncoder()),
+        captureFrame: mock(async () => ({ buffer: Buffer.alloc(1) })),
+        concat: mock(async () => ({ success: true as const })),
+        closeSession: mock(async () => {}),
+        removeFile: () => {},
+      },
+    });
+    expect(created).toEqual([0]);
+  });
+
+  it("retries a segment once on a fresh session after a target loss", async () => {
+    let next = 0;
+    const captured: number[] = [];
+    let failed = false;
+    const removed: string[] = [];
+    const result = await runCaptureSegmentedStage({
+      ...fakeStageInput({ totalFrames: 4 }),
+      segmentFrames: 2,
+      segmentDir: join(fixtureRoot, "retry"),
+      sessionFactory: { create: async () => fakeSession(next++) },
+      deps: {
+        spawnEncoder: mock(async () => okEncoder()),
+        captureFrame: mock(async (_s: unknown, i: number) => {
+          if (i === 2 && !failed) {
+            failed = true;
+            throw new Error("Protocol error (Page.captureScreenshot): Target closed");
+          }
+          captured.push(i);
+          return { buffer: Buffer.alloc(1) };
+        }),
+        concat: mock(async () => ({ success: true as const })),
+        closeSession: mock(async () => {}),
+        removeFile: (p: string) => removed.push(p),
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) throw new Error("unreachable");
+    expect(result.segmentRetries).toBe(1);
+    // Segment 1 restarts from its first frame on the fresh session.
+    expect(captured).toEqual([0, 1, 2, 3]);
+    // The partial segment file is deleted so a later resume cannot see it.
+    expect(removed).toEqual([segmentOutputPath(join(fixtureRoot, "retry"), 1)]);
+    expect(next).toBe(2);
+  });
+
+  it("does not retry a non-target-loss failure", async () => {
+    let next = 0;
+    await expect(
+      runCaptureSegmentedStage({
+        ...fakeStageInput({ totalFrames: 4 }),
+        segmentFrames: 2,
+        segmentDir: join(fixtureRoot, "noretry"),
+        sessionFactory: { create: async () => fakeSession(next++) },
+        deps: {
+          spawnEncoder: mock(async () => okEncoder()),
+          captureFrame: mock(async (_s: unknown, i: number) => {
+            if (i === 2) throw new Error("media_start_out_of_range");
+            return { buffer: Buffer.alloc(1) };
+          }),
+          concat: mock(async () => ({ success: true as const })),
+          closeSession: mock(async () => {}),
+          removeFile: () => {},
+        },
+      }),
+    ).rejects.toThrow(/media_start_out_of_range/);
+    // No recycle: the session count never grew past the initial one.
+    expect(next).toBe(1);
+  });
+
+  it("fails when the retry fails too", async () => {
+    let next = 0;
+    await expect(
+      runCaptureSegmentedStage({
+        ...fakeStageInput({ totalFrames: 4 }),
+        segmentFrames: 2,
+        segmentDir: join(fixtureRoot, "retryfail"),
+        sessionFactory: { create: async () => fakeSession(next++) },
+        deps: {
+          spawnEncoder: mock(async () => okEncoder()),
+          captureFrame: mock(async (_s: unknown, i: number) => {
+            if (i === 2) throw new Error("Protocol error: Session closed.");
+            return { buffer: Buffer.alloc(1) };
+          }),
+          concat: mock(async () => ({ success: true as const })),
+          closeSession: mock(async () => {}),
+          removeFile: () => {},
+        },
+      }),
+    ).rejects.toThrow(/Session closed/);
+    // Exactly one retry: initial session + one recycle, not a loop.
+    expect(next).toBe(2);
+  });
 });
