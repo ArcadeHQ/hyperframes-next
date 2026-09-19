@@ -1749,7 +1749,23 @@ function collectAddLabelDefs(
   scope: ScopeBindings,
   sortedCalls: TweenCallInfo[],
 ): AddLabelDef[] {
-  const callLocs = sortedCalls.map((c) => c.node.callee?.property?.loc?.start);
+  // Clones from the same expansion share __hfSiteStart (see tagTimelineCalls), so a
+  // label and a sibling tween can tie on site; __hfOrder is the tie-break, matching
+  // the source order tagTimelineCalls stamped them in.
+  const callKeys = sortedCalls.map((c) => ({
+    site: callSiteStart(c),
+    order: c.node.__hfOrder as number | undefined,
+  }));
+  const comesAfter = (
+    site: number | undefined,
+    order: number | undefined,
+    labelSite: number,
+    labelOrder: number | undefined,
+  ): boolean => {
+    if (site === undefined) return false;
+    if (site !== labelSite) return site > labelSite;
+    return (order ?? -Infinity) > (labelOrder ?? -Infinity);
+  };
   const defs: AddLabelDef[] = [];
   acornWalk.simple(ast, {
     // fallow-ignore-next-line complexity
@@ -1772,14 +1788,13 @@ function collectAddLabelDefs(
       const posVal = resolveNode(node.arguments?.[1], scope);
       const position =
         typeof posVal === "number" || typeof posVal === "string" ? posVal : undefined;
-      const labelLoc = callee.property?.loc?.start;
+      // Same coordinate space as callSiteStart: a label cloned into an inlined
+      // helper keeps the declaration's own offset unless tagTimelineCalls stamped it.
+      const labelStart: number | undefined = node.__hfSiteStart ?? callee.property?.start;
+      const labelOrder: number | undefined = node.__hfOrder;
       let order = sortedCalls.length;
-      if (labelLoc) {
-        order = callLocs.findIndex(
-          (l) =>
-            l &&
-            (l.line > labelLoc.line || (l.line === labelLoc.line && l.column > labelLoc.column)),
-        );
+      if (labelStart !== undefined) {
+        order = callKeys.findIndex((k) => comesAfter(k.site, k.order, labelStart, labelOrder));
         if (order === -1) order = sortedCalls.length;
       }
       defs.push({ name, position, order });
@@ -1795,15 +1810,20 @@ function compareByLoc(a: TweenCallInfo, b: TweenCallInfo): number {
   return aLoc.line - bLoc.line || aLoc.column - bLoc.column;
 }
 
-// Inlined tweens carry a monotonic __hfOrder (clones share source loc, so loc
-// can't order them); they sort by that, after all literal (loc-ordered) tweens.
+// Clones of an inlined helper share source loc, so an inlined tween sorts at the top-level
+// statement that expanded it (__hfSiteStart), then by expansion order (__hfOrder).
+function callSiteStart(call: TweenCallInfo): number | undefined {
+  return call.node.__hfSiteStart ?? call.node.callee?.property?.start;
+}
+
 function compareCallOrder(a: TweenCallInfo, b: TweenCallInfo): number {
+  const aSite = callSiteStart(a);
+  const bSite = callSiteStart(b);
+  if (aSite !== undefined && bSite !== undefined && aSite !== bSite) return aSite - bSite;
   const ao = a.node.__hfOrder;
   const bo = b.node.__hfOrder;
-  if (ao === undefined && bo === undefined) return compareByLoc(a, b);
-  if (ao === undefined) return -1;
-  if (bo === undefined) return 1;
-  return ao - bo;
+  if (ao !== undefined && bo !== undefined) return ao - bo;
+  return compareByLoc(a, b);
 }
 
 function sortBySourcePosition(calls: TweenCallInfo[]): void {

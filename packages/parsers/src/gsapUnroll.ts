@@ -15,10 +15,12 @@
  * inside other helpers) are left as-is rather than guessed at.
  */
 import * as acorn from "acorn";
+import * as acornWalk from "acorn-walk";
 import MagicString from "magic-string";
 import type { GsapAnimation } from "./gsapSerialize.js";
 import { serializeValue as valueToCode, safeJsKey as safeKey } from "./gsapSerialize.js";
 import { parseGsapScriptAcorn } from "./gsapParserAcorn.js";
+import { isFunctionNode, isTimelineRooted } from "./gsapInline.js";
 
 // acorn nodes are structurally untyped here.
 type Node = any;
@@ -100,9 +102,7 @@ function declaresFunction(stmt: Node): boolean {
   if (stmt.type === "FunctionDeclaration") return true;
   return (
     stmt.type === "VariableDeclaration" &&
-    (stmt.declarations ?? []).some((d: Node) =>
-      ["FunctionExpression", "ArrowFunctionExpression"].includes(d.init?.type),
-    )
+    (stmt.declarations ?? []).some((d: Node) => isFunctionNode(d.init))
   );
 }
 
@@ -146,16 +146,98 @@ function unreferencedHelperDecls(
   return dead;
 }
 
-/** A literal tween cannot encode an unknown start, duration or selector, so those statements stay as authored. */
-function dropStatementsWithUnknownTiming(byStatement: Map<Node, GsapAnimation[]>): void {
-  for (const [stmt, anims] of byStatement) {
-    if (
-      anims.some(
-        (a) => a.durationUnresolved || a.resolvedStart === undefined || a.hasUnresolvedSelector,
-      )
-    ) {
-      byStatement.delete(stmt);
+const EFFECT_NODES = new Set([
+  "CallExpression",
+  "NewExpression",
+  "UpdateExpression",
+  "AssignmentExpression",
+]);
+
+function containsEffect(node: Node): boolean {
+  let hit = false;
+  acornWalk.full(node, (n: Node) => {
+    if (EFFECT_NODES.has(n.type)) hit = true;
+  });
+  return hit;
+}
+
+/** True for a chain like `tl.to(...).from(...)` where every link is a tween method with effect-free arguments. */
+function isPureTweenChain(expr: Node, timelineVar: string): boolean {
+  let node = expr;
+  while (node?.type === "CallExpression") {
+    if (!isTimelineRooted(node, timelineVar) || node.arguments.some(containsEffect)) return false;
+    node = node.callee?.object;
+  }
+  return node?.type === "Identifier";
+}
+
+const blockStatements = (block: Node): Node[] =>
+  block?.type === "BlockStatement" ? block.body : block ? [block] : [];
+
+/** Statements a `forEach` callback runs, or null when the call is not a `forEach` with a function. */
+function forEachBody(call: Node): Node[] | null {
+  const callback = call.callee?.property?.name === "forEach" ? call.arguments[0] : null;
+  return callback?.body ? blockStatements(callback.body) : null;
+}
+
+/** Statements a helper call or a `forEach` callback runs, or null when the call is neither. */
+function calledBody(call: Node, helpers: Map<string, Node[]>): Node[] | null {
+  if (call?.type !== "CallExpression") return null;
+  if (call.callee?.type !== "Identifier") return forEachBody(call);
+  return helpers.get(call.callee.name) ?? null;
+}
+
+/** Statements of the helper a call statement invokes, or of the loop it is, else null. */
+function bodyOf(stmt: Node, helpers: Map<string, Node[]>): Node[] | null {
+  if (stmt.type === "ExpressionStatement") return calledBody(stmt.expression, helpers);
+  return stmt.body ? blockStatements(stmt.body) : null;
+}
+
+interface UnrollScope {
+  timelineVar: string;
+  helpers: Map<string, Node[]>;
+}
+
+/** True when running `stmts` only adds tweens to the timeline, so replacing them with literals drops nothing. */
+function onlyAddsTweens(stmts: Node[], ctx: UnrollScope, seen: Set<Node[]> = new Set()): boolean {
+  if (seen.has(stmts)) return false;
+  seen.add(stmts);
+  return stmts.every((stmt) => {
+    if (stmt.type === "VariableDeclaration") return !containsEffect(stmt);
+    if (stmt.type === "ExpressionStatement" && isPureTweenChain(stmt.expression, ctx.timelineVar)) {
+      return true;
     }
+    const nested = bodyOf(stmt, ctx.helpers);
+    return nested !== null && onlyAddsTweens(nested, ctx, seen);
+  });
+}
+
+/** `[name, body]` for each function a top-level statement declares. */
+function declaredFunctions(stmt: Node): Array<[string, Node[]]> {
+  if (stmt.type === "FunctionDeclaration") {
+    return stmt.id?.name ? [[stmt.id.name, blockStatements(stmt.body)]] : [];
+  }
+  if (stmt.type !== "VariableDeclaration") return [];
+  return stmt.declarations
+    .filter((d: Node) => d.id?.name && isFunctionNode(d.init))
+    .map((d: Node): [string, Node[]] => [d.id.name, blockStatements(d.init.body)]);
+}
+
+/** Function declarations and function-valued consts by name, with their body statements. */
+const collectHelperBodies = (statements: Node[]): Map<string, Node[]> =>
+  new Map(statements.flatMap(declaredFunctions));
+
+/** Statements stay as authored when literal tweens cannot encode their timing, or they do more than add tweens. */
+function dropStatementsUnsafeToUnroll(
+  byStatement: Map<Node, GsapAnimation[]>,
+  ctx: UnrollScope,
+): void {
+  for (const [stmt, anims] of byStatement) {
+    const unknownTiming = anims.some(
+      (a) => a.durationUnresolved || a.resolvedStart === undefined || a.hasUnresolvedSelector,
+    );
+    const bodyStmts = unknownTiming ? null : bodyOf(stmt, ctx.helpers);
+    if (bodyStmts === null || !onlyAddsTweens(bodyStmts, ctx)) byStatement.delete(stmt);
   }
 }
 
@@ -189,7 +271,10 @@ export function unrollComputedTimeline(script: string): string {
   const grouped = groupByTopLevelStatement(computed, statements);
   if (!grouped) return script;
   const { byStatement, helperNames } = grouped;
-  dropStatementsWithUnknownTiming(byStatement);
+  dropStatementsUnsafeToUnroll(byStatement, {
+    timelineVar: parsed.timelineVar,
+    helpers: collectHelperBodies(statements),
+  });
   if (byStatement.size === 0) return script;
 
   const ms = new MagicString(script);

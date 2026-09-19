@@ -155,4 +155,93 @@ fade("#b", 2);
 ${call};`;
     expect(unrollComputedTimeline(script)).not.toContain("function fade");
   });
+
+  describe("keeps the timeline the parser read", () => {
+    const starts = (script: string) =>
+      Object.fromEntries(
+        parseGsapScriptAcorn(script).animations.map((a) => [a.targetSelector, a.resolvedStart]),
+      );
+
+    const script = `const tl = gsap.timeline();
+function fade(s) { tl.to(s, { opacity: 0, duration: 1 }); }
+fade("#a"); tl.to("#c", { x: 1, duration: 1 }); fade("#b");`;
+
+    it("resolves helper tweens in source order among literal tweens", () => {
+      expect(starts(script)).toEqual({ "#a": 0, "#c": 1, "#b": 2 });
+    });
+
+    it("unrolls to a script whose tweens start at the same times", () => {
+      expect(starts(unrollComputedTimeline(script))).toEqual(starts(script));
+    });
+
+    it("places helper tweens at the label they name, and unrolls to the same starts", () => {
+      const labelled = `const tl = gsap.timeline();
+function fade(s, at) { tl.to(s, { opacity: 0, duration: 1 }, at); }
+tl.addLabel("mid", 2);
+fade("#a", "mid"); fade("#b", "mid+=0.5");
+tl.to("#c", { x: 1, duration: 1 }, "mid");`;
+      expect(starts(labelled)).toEqual({ "#a": 2, "#b": 2.5, "#c": 2 });
+      expect(starts(unrollComputedTimeline(labelled))).toEqual(starts(labelled));
+    });
+
+    it("keeps the order of a tween chain a helper adds", () => {
+      const chained = `const tl = gsap.timeline();
+function f() { tl.to("#a", { opacity: 0, duration: 1 }).to("#b", { x: 5, duration: 2 }).to("#c", { y: 7, duration: 3 }); }
+f();`;
+      expect(starts(chained)).toEqual({ "#a": 0, "#b": 1, "#c": 3 });
+      expect(starts(unrollComputedTimeline(chained))).toEqual(starts(chained));
+    });
+
+    it("resolves a tween positioned by a label defined inside a helper body", () => {
+      const labelInHelper = `const tl = gsap.timeline();
+function group(s) { tl.addLabel("mid"); tl.to(s, { opacity: 0, duration: 1 }); }
+tl.to("#pre", { x: 1, duration: 1 });
+group("#a");
+tl.to("#post", { x: 2, duration: 1 }, "mid");`;
+      expect(starts(labelInHelper)).toEqual({ "#pre": 0, "#a": 1, "#post": 1 });
+    });
+
+    it("resolves a helper that only reads a label defined inside a sibling helper", () => {
+      const siblingLabel = `const tl = gsap.timeline();
+function makeLabel(s) { tl.addLabel("mid"); tl.to(s, { opacity: 0, duration: 1 }); }
+function useLabel(s) { tl.to(s, { x: 1, duration: 1 }, "mid"); }
+tl.to("#pre", { y: 1, duration: 1 });
+makeLabel("#a");
+useLabel("#b");`;
+      expect(starts(siblingLabel)).toEqual({ "#pre": 0, "#a": 1, "#b": 1 });
+      // useLabel only adds a tween, so it unrolls to a literal at the label's resolved start.
+      expect(starts(unrollComputedTimeline(siblingLabel))).toEqual(starts(siblingLabel));
+    });
+  });
+
+  it("leaves a helper as authored when an inner link of its tween chain has a callback", () => {
+    const script = `const tl = gsap.timeline();
+function f(s) { tl.to(s, { opacity: 0, duration: 1, onComplete: () => { window.hit++; } }).to(s, { x: 1, duration: 1 }); }
+f("#a");`;
+    expect(unrollComputedTimeline(script)).toBe(script);
+  });
+
+  it("leaves a helper call as authored when the helper does more than add tweens", () => {
+    const script = `const tl = gsap.timeline();
+function fade(sel, at) { window.count++; tl.to(sel, { opacity: 1, duration: 1 }, at); }
+fade("#a", 1);`;
+    expect(unrollComputedTimeline(script)).toBe(script);
+  });
+
+  it("leaves a loop as authored when its body sets state outside the timeline", () => {
+    const script = `const tl = gsap.timeline();
+for (let i = 0; i < 2; i++) { gsap.set("#x", { opacity: 0 }); tl.to("#x", { opacity: 1, duration: 1 }, i); }`;
+    expect(unrollComputedTimeline(script)).toBe(script);
+  });
+
+  it.each([
+    ["a tl.call callback", "tl.call(() => window.hit++, [], at);"],
+    ["a label", 'tl.addLabel("mark", at);'],
+    ["a call chained after a tween", "tl.to(sel, { opacity: 1, duration: 1 }, at).call(() => {});"],
+  ])("leaves a helper as authored when it adds %s", (_case, body) => {
+    const script = `const tl = gsap.timeline();
+function fade(sel, at) { ${body} }
+fade("#a", 1);`;
+    expect(unrollComputedTimeline(script)).toBe(script);
+  });
 });
