@@ -11,6 +11,8 @@ import type { PreviewState } from "./Button";
 export interface SelectOption {
   label: string;
   value: string;
+  /** Offered but not choosable; the label stays visible so the reason stays visible too. */
+  disabled?: boolean;
 }
 
 export interface SelectProps {
@@ -81,11 +83,13 @@ export function Select({
                 <BaseSelect.Item
                   key={option.value}
                   value={option.value}
+                  disabled={option.disabled}
                   className={cn(
                     "flex h-ctl-sm cursor-pointer select-none items-center gap-2 px-2.5",
                     "text-step-11 text-text-2 outline-hidden",
                     "data-[highlighted]:bg-hover data-[highlighted]:text-text-0",
                     "data-[selected]:text-text-0",
+                    "data-[disabled]:cursor-not-allowed data-[disabled]:opacity-40",
                   )}
                 >
                   <BaseSelect.ItemText className="truncate">{option.label}</BaseSelect.ItemText>
