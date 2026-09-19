@@ -4,8 +4,8 @@ import {
   SPEED_PRESETS,
   parseRateLane,
   rateAt,
-  readPreservePitch,
   resolveRateSpec,
+  shiftRateLane,
   sourceTimeAt,
   speedPresetLane,
   timeAtSourceTime,
@@ -71,6 +71,31 @@ describe("rateAt", () => {
   });
 });
 
+describe("shiftRateLane", () => {
+  it("sees the lane from dt seconds in: integrating from 1s of a 4s 1x to 3x ramp", () => {
+    const lane = ramp([
+      [0, 1],
+      [4, 3],
+    ]);
+    // source(3) - source(1) = 4.6586 - 1.1508
+    expect(sourceTimeAt(shiftRateLane(lane, 1), 2)).toBeCloseTo(3.5078, 2);
+  });
+});
+
+describe("shiftRateLane with a shaped segment", () => {
+  it("keeps the curve of a segment cut in the middle: shifted integral equals the original's difference", () => {
+    const lane: HfAutomationLane = {
+      target: RATE_TARGET,
+      points: [
+        { t: 0, v: 1, curve: 0.8 },
+        { t: 4, v: 3 },
+      ],
+    };
+    const expected = sourceTimeAt(lane, 4) - sourceTimeAt(lane, 1);
+    expect(sourceTimeAt(shiftRateLane(lane, 1), 3)).toBeCloseTo(expected, 2);
+  });
+});
+
 describe("lane parsing", () => {
   const attr = JSON.stringify({
     version: 1,
@@ -88,18 +113,12 @@ describe("lane parsing", () => {
   });
 });
 
-describe("presets and pitch", () => {
+describe("presets", () => {
   it("stretches every preset over the clip and keeps it in range", () => {
     for (const { id } of SPEED_PRESETS) {
       const lane = speedPresetLane(id, 8);
       expect(lane.points[lane.points.length - 1]!.t).toBe(8);
       for (const p of lane.points) expect(p.v).toBeGreaterThanOrEqual(0.1);
     }
-  });
-
-  it("preserves pitch unless the clip opts out", () => {
-    const el = (v: string | null) => ({ getAttribute: () => v });
-    expect(readPreservePitch(el(null))).toBe(true);
-    expect(readPreservePitch(el("false"))).toBe(false);
   });
 });
