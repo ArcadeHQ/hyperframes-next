@@ -74,6 +74,7 @@ interface LeftSidebarProps {
   onLint?: () => void;
   linting?: boolean;
   lintFindingCount?: number;
+  lintHasError?: boolean;
   lintFindingsByFile?: Map<string, { count: number; messages: string[] }>;
   onToggleCollapse?: () => void;
   onAddBlock?: (blockName: string) => void | Promise<void>;
@@ -108,6 +109,7 @@ export const LeftSidebar = memo(
       onLint,
       linting,
       lintFindingCount,
+      lintHasError,
       lintFindingsByFile,
       onToggleCollapse,
       onAddBlock,
@@ -319,8 +321,20 @@ export const LeftSidebar = memo(
                   </svg>
                   {linting ? "Linting…" : "Lint"}
                   {!linting && lintFindingCount != null && lintFindingCount > 0 && (
-                    <span className="ml-1 min-w-[16px] rounded-full bg-amber-500/20 px-1 text-[9px] font-bold text-amber-400">
+                    <span
+                      data-lint-badge={lintHasError ? "error" : "warning"}
+                      className={
+                        lintHasError
+                          ? "ml-1 min-w-[16px] rounded-full bg-panel-danger/25 px-1 text-[9px] font-bold text-panel-danger animate-pulse motion-reduce:animate-none"
+                          : "ml-1 min-w-[16px] rounded-full bg-amber-500/20 px-1 text-[9px] font-bold text-amber-400"
+                      }
+                    >
                       {lintFindingCount}
+                      <span className="sr-only">
+                        {lintHasError
+                          ? " lint findings, including errors"
+                          : " lint findings, warnings only"}
+                      </span>
                     </span>
                   )}
                 </button>
