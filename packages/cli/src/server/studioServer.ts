@@ -451,14 +451,14 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
       return cachedProjectSignature;
     },
 
-    async lint(html: string, opts?: { filePath?: string }) {
+    async lint(html: string, opts?: { filePath?: string; isSubComposition?: boolean }) {
       const { lintHyperframeHtml } = await import("@hyperframes/lint");
-      return await lintHyperframeHtml(html, opts);
+      return await lintHyperframeHtml(html, { ...opts, host: "studio" });
     },
 
     async lintProject(dir: string) {
       const { lintProject } = await import("@hyperframes/lint");
-      return await lintProject(dir);
+      return await lintProject(dir, undefined, { host: "studio" });
     },
 
     runtimeUrl: "/api/runtime.js",
