@@ -3353,7 +3353,6 @@ describe("resolveParallelCaptureMode", () => {
 describe("shouldSegmentCapture", () => {
   const base = {
     env: {} as Record<string, string | undefined>,
-    workerCount: 1,
     durationSeconds: 900,
     outputFormat: "mp4",
     layeredOrEffectRoute: false,
@@ -3371,7 +3370,6 @@ describe("shouldSegmentCapture", () => {
     const env = { HF_SEGMENTED_MIN_SECONDS: String(SEGMENTED_MIN_SECONDS_AFTER_SOAK) };
     expect(shouldSegmentCapture({ ...base, env })).toBe(true);
     expect(shouldSegmentCapture({ ...base, env, outputFormat: "mov" })).toBe(true);
-    expect(shouldSegmentCapture({ ...base, env, workerCount: 4 })).toBe(true);
     expect(shouldSegmentCapture({ ...base, env, durationSeconds: 599 })).toBe(false);
     expect(shouldSegmentCapture({ ...base, env, durationSeconds: 600 })).toBe(true);
   });

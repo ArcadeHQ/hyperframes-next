@@ -2523,7 +2523,9 @@ function resolveSegmentedMinSeconds(env: Readonly<Record<string, string | undefi
 }
 
 /**
- * Whether this render captures in segments. `HF_SEGMENTED_CAPTURE=true`
+ * Whether this render captures in segments. The worker count is not an
+ * input: any count segments (Phase 2d), so nothing here consults it.
+ * `HF_SEGMENTED_CAPTURE=true`
  * forces it at any duration and `=false` is the kill switch; otherwise it is
  * the duration threshold above. The exclusions are the routes whose
  * concat-copy or capture loop the segment contract does not cover: webm's VP9
@@ -2533,7 +2535,6 @@ function resolveSegmentedMinSeconds(env: Readonly<Record<string, string | undefi
  */
 export function shouldSegmentCapture(args: {
   env: Readonly<Record<string, string | undefined>>;
-  workerCount: number;
   durationSeconds: number;
   outputFormat: string;
   layeredOrEffectRoute: boolean;
@@ -4187,7 +4188,6 @@ async function executeRenderPipeline(input: {
       // shader transitions run their own compositor).
       useSegmentedCapture: shouldSegmentCapture({
         env: process.env,
-        workerCount,
         durationSeconds: job.duration,
         outputFormat,
         layeredOrEffectRoute: hasHdrContent || compiled.hasShaderTransitions,

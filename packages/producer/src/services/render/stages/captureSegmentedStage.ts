@@ -100,7 +100,13 @@ export interface CaptureSegmentedStageInput {
   workerCount?: number;
   /** Per-worker factory; takes precedence over sessionFactory when set. */
   sessionFactoryForWorker?: (workerId: number) => SessionFactory;
-  /** Opens each session; defaults to reusing the probe session, then fresh ones. */
+  /**
+   * Opens each session; defaults to reusing the probe session, then fresh
+   * ones. Without sessionFactoryForWorker every worker shares this one
+   * factory, so it must hand out a distinct session per create() call, as
+   * the default does; a factory that returns one shared session would have N
+   * workers driving one browser.
+   */
   sessionFactory?: SessionFactory;
   /** Recycle the browser every N segments; 0 or absent keeps one session. */
   browserRecycleEverySegments?: number;
