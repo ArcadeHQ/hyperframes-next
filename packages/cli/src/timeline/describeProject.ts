@@ -10,18 +10,37 @@ import { HF_AUDIO_GROUP_ATTR } from "@hyperframes/core/audio-groups";
 import { byStart, type ClipFact, type ClipLane } from "@hyperframes/core/clip-facts";
 import { parseNumeric } from "@hyperframes/core";
 import {
+  readMediaOffsetSeconds,
+  readPlaybackRate,
+  resolveMediaDuration,
+  type MediaDurationSource,
+  type MediaTag,
+} from "@hyperframes/parsers/media-duration";
+import {
   topLevelElements,
   trackKindOf,
   type StructureNode,
   type TrackKind,
 } from "@hyperframes/parsers";
 import { resolveMediaStartSeconds } from "@hyperframes/core/media-timing";
-import { resolveReferencedDuration, resolveReferencedStart } from "@hyperframes/engine";
+import {
+  extractAudioMetadata,
+  extractMediaMetadata,
+  resolveReferencedDuration,
+  resolveReferencedStart,
+} from "@hyperframes/engine";
+
+/** How `duration` was determined: the parsers resolver's names for media, "inner" for a composition host. */
+export type DurationSource = MediaDurationSource | "inner";
 
 export interface TimelineRow extends ClipFact {
   trackKind: TrackKind;
   /** False when the source does not author a duration (media length is only known at render). */
   durationAuthored: boolean;
+  /** Where `duration` came from; `null` for a non-media row with nothing authored and no children to sum. */
+  durationSource: DurationSource | null;
+  /** Why no duration could be resolved; `null` unless `durationSource` is "pending". */
+  pendingReason: string | null;
   /** Why `data-automation` / `data-fx-chain` could not be read; `null` when fine or absent. */
   laneError: string | null;
   /** Start and end on the main timeline, in seconds. `start`/`end` are local to the owning file's composition. */
@@ -91,6 +110,113 @@ interface DocScope {
   origin: number;
   /** Project-relative path of this document, with `/` separators. */
   file: string;
+  /** Bounds concurrent ffprobe spawns for the whole run. Shared reference, not new per document. */
+  withProbeSlot: <T>(fn: () => Promise<T>) => Promise<T>;
+  measure: MeasureMedia;
+}
+
+/** Source length in seconds of a media file. ffprobe in production; tests pass a recorded fake. */
+export type MeasureMedia = (file: string, tag: MediaTag) => Promise<number>;
+
+const measureWithFfprobe: MeasureMedia = async (file, tag) =>
+  (tag === "audio" ? await extractAudioMetadata(file) : await extractMediaMetadata(file))
+    .durationSeconds;
+
+const MEDIA_TAG = /^(video|audio|img)$/;
+const PROBE_CONCURRENCY = 4;
+
+/** ponytail: a 4-line gate beats importing producer's Semaphore, which would pull its whole
+ * dependency tree into the lightweight `timeline` command just to cap ffprobe spawns. */
+export function createProbeGate(max: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async function withProbeSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (active >= max) await new Promise<void>((wake) => waiting.push(wake));
+    else active += 1;
+    try {
+      return await fn();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active -= 1;
+    }
+  };
+}
+
+type ProbeResult = { ok: true; seconds: number } | { ok: false; reason: string };
+
+/** ffprobe length of a media source. `extractMediaMetadata` and `extractAudioMetadata` already
+ * memoize per resolved file path for the process lifetime. */
+async function probeSource(scope: DocScope, el: Element, tag: MediaTag): Promise<ProbeResult> {
+  const src = el.getAttribute("src");
+  if (!src) return { ok: false, reason: "no src attribute" };
+  if (/^https?:\/\//i.test(src)) return { ok: false, reason: "remote source not probed" };
+  const file = realFileInside(scope.projectDir, resolve(scope.dir, src));
+  if (!file) return { ok: false, reason: "source file not found" };
+  return scope.withProbeSlot(async () => {
+    try {
+      return { ok: true, seconds: await scope.measure(file, tag) } as const;
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) } as const;
+    }
+  });
+}
+
+interface DurationResolution {
+  duration: number;
+  durationSource: DurationSource | null;
+  pendingReason: string | null;
+}
+
+function resolveContainerDuration(
+  authored: number | null,
+  children: readonly TimelineRow[],
+): DurationResolution {
+  if (authored !== null)
+    return { duration: authored, durationSource: "authored", pendingReason: null };
+  if (children.length === 0) return { duration: 0, durationSource: null, pendingReason: null };
+  const inner = children.reduce((max, c) => Math.max(max, c.end), 0);
+  return { duration: inner, durationSource: "inner", pendingReason: null };
+}
+
+/** Media rows go through the parsers resolver; only a row it cannot settle without the file is probed. */
+async function resolveMediaRowDuration(
+  scope: DocScope,
+  el: Element,
+  tag: MediaTag,
+  authored: number | null,
+): Promise<DurationResolution> {
+  const getAttr = (name: string) => el.getAttribute(name);
+  const input = {
+    tag,
+    authoredDurationSeconds: authored,
+    mediaStartSeconds: readMediaOffsetSeconds(getAttr),
+    playbackRate: readPlaybackRate(getAttr),
+  };
+  const unprobed = resolveMediaDuration({ ...input, sourceDurationSeconds: null });
+  if (unprobed.source !== "pending") {
+    return {
+      duration: unprobed.seconds ?? 0,
+      durationSource: unprobed.source,
+      pendingReason: null,
+    };
+  }
+  const probe = await probeSource(scope, el, tag);
+  const measured = probe.ok && probe.seconds > 0 ? probe.seconds : null;
+  const result = resolveMediaDuration({ ...input, sourceDurationSeconds: measured });
+  return {
+    duration: result.seconds ?? 0,
+    durationSource: result.source,
+    pendingReason: result.source === "pending" ? pendingReason(probe, result.reason) : null,
+  };
+}
+
+/** Why a media row is pending: the probe's failure, or that it opened but reported no length. */
+function pendingReason(probe: ProbeResult, resolverReason: string | undefined): string {
+  if (!probe.ok) return probe.reason;
+  return probe.seconds > 0
+    ? (resolverReason ?? "source duration unavailable")
+    : "source reports no duration";
 }
 
 const roundMs = (v: number) => Math.round(v * 1000) / 1000;
@@ -108,18 +234,19 @@ function mainTimelineStart(scope: DocScope, el: Element, start: number): number 
   });
 }
 
-function describeRow(scope: DocScope, node: DomNode, depth: number): TimelineRow {
+async function describeRow(scope: DocScope, node: DomNode, depth: number): Promise<TimelineRow> {
   const { el } = node;
   const { doc, startCache } = scope;
   const start = resolveReferencedStart(doc, el, startCache, new Set());
   const authored = resolveReferencedDuration(doc, el, startCache, new Set());
   const host = el.getAttribute("data-composition-src");
   const absStart = mainTimelineStart(scope, el, start);
-  const children = host && depth === 0 ? readSubComposition(host, scope, absStart) : [];
-  const inner = children.reduce((max, c) => Math.max(max, c.end), 0);
-  const duration = authored ?? inner;
-  const rate = parseNumeric(el.getAttribute("data-playback-rate"));
+  const children = host && depth === 0 ? await readSubComposition(host, scope, absStart) : [];
   const kind = el.tagName.toLowerCase();
+  const { duration, durationSource, pendingReason } = MEDIA_TAG.test(kind)
+    ? await resolveMediaRowDuration(scope, el, kind as MediaTag, authored)
+    : resolveContainerDuration(authored, children);
+  const rate = parseNumeric(el.getAttribute("data-playback-rate"));
   return {
     id: el.id || el.getAttribute("data-composition-id") || kind,
     label: null,
@@ -140,11 +267,17 @@ function describeRow(scope: DocScope, node: DomNode, depth: number): TimelineRow
     audioGroup: el.getAttribute(HF_AUDIO_GROUP_ATTR),
     role: null,
     durationAuthored: authored !== null,
+    durationSource,
+    pendingReason,
     children,
   };
 }
 
-function readSubComposition(src: string, parent: DocScope, origin: number): TimelineRow[] {
+async function readSubComposition(
+  src: string,
+  parent: DocScope,
+  origin: number,
+): Promise<TimelineRow[]> {
   const authored = resolve(parent.dir, src);
   const file = realFileInside(parent.projectDir, authored);
   if (!file) return [];
@@ -159,10 +292,13 @@ function readSubComposition(src: string, parent: DocScope, origin: number): Time
     projectDir: parent.projectDir,
     origin,
     file: relative(parent.projectDir, authored).split(sep).join("/"),
+    withProbeSlot: parent.withProbeSlot,
+    measure: parent.measure,
   };
-  return topLevelElements(toNode(root))
-    .map((node) => describeRow(scope, node, 1))
-    .sort(byStart);
+  const rows = await Promise.all(
+    topLevelElements(toNode(root)).map((node) => describeRow(scope, node, 1)),
+  );
+  return rows.sort(byStart);
 }
 
 /** The file's real path when it is a regular file inside the project (symlinks resolved), else null. */
@@ -178,7 +314,10 @@ function realFileInside(projectDir: string, path: string): string | null {
 }
 
 /** Needs a global DOMParser (`ensureDOMParser`). Reads `index.html` and one level of sub-compositions. */
-export function describeProject(indexPath: string): ProjectTimeline {
+export async function describeProject(
+  indexPath: string,
+  measure: MeasureMedia = measureWithFfprobe,
+): Promise<ProjectTimeline> {
   const doc = new DOMParser().parseFromString(readFileSync(indexPath, "utf-8"), "text/html");
   const root = doc.querySelector("[data-composition-id]") ?? doc.body;
   const dir = dirname(indexPath);
@@ -189,10 +328,12 @@ export function describeProject(indexPath: string): ProjectTimeline {
     projectDir: dir,
     origin: 0,
     file: basename(indexPath),
+    withProbeSlot: createProbeGate(PROBE_CONCURRENCY),
+    measure,
   };
-  const rows = topLevelElements(toNode(root))
-    .map((node) => describeRow(scope, node, 0))
-    .sort(byStart);
+  const rows = (
+    await Promise.all(topLevelElements(toNode(root)).map((node) => describeRow(scope, node, 0)))
+  ).sort(byStart);
   const declared = parseNumeric(root.getAttribute("data-duration"));
   return {
     duration: declared ?? rows.reduce((max, r) => Math.max(max, r.end), 0),
