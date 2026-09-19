@@ -181,6 +181,7 @@ describe("RenderRequest", () => {
       {},
       { ...value.options.engineConfig, protocolTimeout: "forever" },
       { ...value.options.engineConfig, browserGpuMode: "turbo" },
+      { ...value.options.engineConfig, streamingEncodeDurationCapEnabled: "true" },
     ]) {
       expect(() =>
         parseRenderRequest({ ...value, options: { ...value.options, engineConfig } }),
@@ -191,6 +192,7 @@ describe("RenderRequest", () => {
       {},
       { ...value.options.engineConfig, protocolTimeout: "forever" },
       { ...value.options.engineConfig, browserGpuMode: "turbo" },
+      { ...value.options.engineConfig, streamingEncodeDurationCapEnabled: "true" },
     ]) {
       const distributed = distributedConfigFromRequest(value);
       (distributed as { engineConfig: unknown }).engineConfig = engineConfig;

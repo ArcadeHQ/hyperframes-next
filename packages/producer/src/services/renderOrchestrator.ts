@@ -1404,35 +1404,96 @@ function replaceBodyWithRenderClone(body: HTMLElement, renderClone: Element): vo
   body.appendChild(renderClone);
 }
 
-export function shouldUseStreamingEncode(
-  cfg: Pick<EngineConfig, "enableStreamingEncode" | "streamingEncodeMaxDurationSeconds"> &
-    Partial<Pick<EngineConfig, "lowMemoryMode">>,
+export type StreamingEncodeGateReason =
+  | "disabled_by_config"
+  | "format_excluded"
+  | "invalid_duration"
+  | "duration_cap"
+  | "low_memory_mode"
+  | "parallel_forced"
+  | "single_worker"
+  | "multi_worker";
+
+export interface StreamingEncodeGateDecision {
+  enabled: boolean;
+  /** Why `enabled` is what it is. Logged as `reason` on the streaming-encode gate line. */
+  reason: StreamingEncodeGateReason;
+}
+
+type StreamingGateConfig = Pick<
+  EngineConfig,
+  "enableStreamingEncode" | "streamingEncodeMaxDurationSeconds"
+> &
+  Partial<Pick<EngineConfig, "lowMemoryMode" | "streamingEncodeDurationCapEnabled">>;
+
+/**
+ * Decide whether captured frames stream into ffmpeg (bounded scratch) or land
+ * on disk as raw RGBA (`frames × w × h × 4` bytes). Every `false` names the
+ * gate that fired so the log line and telemetry can attribute disk-path
+ * renders. Order matters and mirrors the historical predicate:
+ * config → format → duration validity → duration cap → parallel override →
+ * worker count.
+ */
+export function explainStreamingEncodeGate(
+  cfg: StreamingGateConfig,
   outputFormat: NonNullable<RenderConfig["format"]>,
   workerCount: number,
   // Composition timeline duration in seconds.
   durationSeconds: number,
-  // Per-render override (set by the DE parallel router) — see
-  // deParallelStreamForced's declaration in executeRenderJob for why this is
-  // a parameter instead of an env-var read.
+  // Per-render override (set by the DE parallel router or the non-DE
+  // parallel-stream router) — see deParallelStreamForced's declaration in
+  // executeRenderJob for why this is a parameter instead of an env-var read.
   forceParallelStream = false,
-): boolean {
-  if (!cfg.enableStreamingEncode) return false;
-  if (outputFormat === "png-sequence") return false;
-  if (outputFormat === "gif") return false;
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return false;
+): StreamingEncodeGateDecision {
+  if (!cfg.enableStreamingEncode) return { enabled: false, reason: "disabled_by_config" };
+  if (outputFormat === "png-sequence" || outputFormat === "gif") {
+    return { enabled: false, reason: "format_excluded" };
+  }
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return { enabled: false, reason: "invalid_duration" };
+  }
+  // The duration cap is an operator opt-in (streamingEncodeDurationCapEnabled);
+  // its original reason — a total-render ffmpeg timeout — became an inactivity
+  // timeout in efc16a945, so by default long renders keep streaming.
+  const overCap =
+    cfg.streamingEncodeDurationCapEnabled === true &&
+    durationSeconds > cfg.streamingEncodeMaxDurationSeconds;
   // Low-memory mode already pins capture to one worker. Keep those renders on
   // the streaming path regardless of duration so captured frames are drained
   // directly into FFmpeg instead of accumulating hundreds of gigabytes of
-  // data URIs / disk frames until Chrome OOMs.
-  if (!cfg.lowMemoryMode && durationSeconds > cfg.streamingEncodeMaxDurationSeconds) return false;
+  // data URIs / disk frames until Chrome OOMs. It only bypasses the cap: an
+  // explicit `--workers N` under low-memory mode still falls to the
+  // worker-count gate below.
+  if (overCap && !cfg.lowMemoryMode) return { enabled: false, reason: "duration_cap" };
   // HF_DE_PARALLEL_STREAM (manual opt-in) / forceParallelStream (router):
-  // allow multi-worker streaming for the interleaved drawElement produce
-  // path. Contiguous-chunk parallel streaming stalls (worker k+1's first
-  // frame waits for ALL of worker k's), so this only makes sense with the
+  // allow multi-worker streaming for the interleaved produce paths.
+  // Contiguous-chunk parallel streaming stalls (worker k+1's first frame
+  // waits for ALL of worker k's), so this only makes sense with the
   // interleaved distribution the capture stage selects under the same
   // condition.
-  if (forceParallelStream || process.env.HF_DE_PARALLEL_STREAM === "true") return true;
-  return workerCount === 1;
+  if (forceParallelStream || process.env.HF_DE_PARALLEL_STREAM === "true") {
+    return { enabled: true, reason: "parallel_forced" };
+  }
+  if (workerCount === 1) {
+    return { enabled: true, reason: overCap ? "low_memory_mode" : "single_worker" };
+  }
+  return { enabled: false, reason: "multi_worker" };
+}
+
+export function shouldUseStreamingEncode(
+  cfg: StreamingGateConfig,
+  outputFormat: NonNullable<RenderConfig["format"]>,
+  workerCount: number,
+  durationSeconds: number,
+  forceParallelStream = false,
+): boolean {
+  return explainStreamingEncodeGate(
+    cfg,
+    outputFormat,
+    workerCount,
+    durationSeconds,
+    forceParallelStream,
+  ).enabled;
 }
 
 /**
@@ -2130,9 +2191,12 @@ export function shouldPreferParallelDrawElement(args: {
    * (`shouldUseStreamingEncode` at the router's worker count with
    * forceParallelStream). The router's entire value is that path; without it
    * firing would pin workerCount to 3 and skip calibration while delivering
-   * none of the benefit — e.g. a composition longer than
-   * `streamingEncodeMaxDurationSeconds` (240 s default), where the duration
-   * cap disables streaming before the router's force flag is consulted.
+   * none of the benefit — e.g. png-sequence / gif output, streaming disabled
+   * by config, or — only when the operator opt-in
+   * `streamingEncodeDurationCapEnabled` is on — a composition longer than
+   * `streamingEncodeMaxDurationSeconds` (240 s), where the duration cap
+   * disables streaming before the router's force flag is consulted. With the
+   * cap off (the default) long compositions are eligible here too.
    */
   parallelStreamingAvailable: boolean;
   /** Machine RAM (os.totalmem, MB). */
@@ -3472,8 +3536,9 @@ async function executeRenderPipeline(input: {
         process.env.PRODUCER_EXPERIMENTAL_FAST_CAPTURE === "true" ||
         process.env.HF_DE_PARALLEL_STREAM === "true",
       routerEnabled: deParallelRouterEnabled,
-      // Router pins 3 workers for the streaming path; don't pin when the
-      // duration cap (or any other streaming gate) would turn that path off.
+      // Router pins 3 workers for the streaming path; don't pin when a
+      // streaming gate (config, format, or the opt-in duration cap) would turn
+      // that path off.
       parallelStreamingAvailable: shouldUseStreamingEncode(
         cfg,
         outputFormat,
@@ -3811,16 +3876,19 @@ async function executeRenderPipeline(input: {
     // on for this multi-worker render (same formula as the early value above,
     // now including `captureParallelStreamForced`). This is the value the
     // rest of the pipeline (encode/writer selection, logging) uses.
-    useStreamingEncode = shouldUseStreamingEncode(
+    const streamingGate = explainStreamingEncodeGate(
       cfg,
       outputFormat,
       workerCount,
       job.duration,
       deParallelStreamForced || captureParallelStreamForced,
     );
+    useStreamingEncode = streamingGate.enabled;
     log.info("streaming-encode gate", {
       enabled: useStreamingEncode,
+      reason: streamingGate.reason,
       configFlag: cfg.enableStreamingEncode,
+      durationCapEnabled: cfg.streamingEncodeDurationCapEnabled,
       outputFormat,
       workerCount,
       durationSeconds: job.duration,
