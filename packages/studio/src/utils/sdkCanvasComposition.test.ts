@@ -6,13 +6,13 @@ import { openComposition } from "@hyperframes/sdk";
 
 /**
  * linkedom's HTMLCanvasElement constructor calls `createCanvas(300, 150)` from
- * the Node-only `canvas` package. linkedom guards that import with
- * `try { require('canvas') } catch { require('./canvas-shim.cjs') }` — but a
- * bundler resolves the require statically, so the catch never fires in the
- * browser build and `createCanvas` lands undefined. Parsing any `<canvas>` tag
- * then throws, `openComposition` rejects, and Studio silently loses its SDK
- * session for the whole composition (no cutover, and the resolver shadow does
- * not run either).
+ * the Node-only `canvas` package. linkedom guards that import in a try/catch —
+ * try the native package, fall back to its own bundled shim — but a bundler
+ * resolves the require statically, so the catch never fires in the browser
+ * build and `createCanvas` lands undefined. Parsing any `<canvas>` tag then
+ * throws, `openComposition` rejects, and Studio silently loses its SDK session
+ * for the whole composition (no cutover, and the resolver shadow does not run
+ * either).
  *
  * Production telemetry, 72h after the v0.8.47 flip: 1065 of 1544
  * `studio:sdk_session_unavailable` events were this crash, spread across a

@@ -2,10 +2,9 @@
  * Browser stub for the Node-only `canvas` package.
  *
  * linkedom's `HTMLCanvasElement` constructor calls `createCanvas(300, 150)`
- * (300x150 being the HTML canvas default size). linkedom guards that import:
- *
- *     try { module.exports = require('canvas') }
- *     catch { module.exports = require('./canvas-shim.cjs') }
+ * (300x150 being the HTML canvas default size). linkedom guards that import in
+ * a try/catch: the try requires the native `canvas` package, and the catch
+ * falls back to linkedom's own bundled canvas shim.
  *
  * That guard only works with a *runtime* require. Vite resolves the specifier
  * statically, so the bundled form is a plain assignment that cannot throw, the
