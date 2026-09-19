@@ -58,6 +58,7 @@ import { HF_AUDIO_GROUP_TAG } from "@hyperframes/core/audio-groups";
 import { HTML_BODY_CSS_HEIGHT_FIRST_RE, HTML_BODY_CSS_WIDTH_FIRST_RE } from "@hyperframes/parsers";
 import {
   type EngineConfig,
+  extractMediaMetadata,
   resolveConfig,
   type ExtractionResult,
   type ExtractionPhaseBreakdown,
@@ -143,6 +144,15 @@ import {
 } from "./render/capturePlan.js";
 import { runCaptureSegmentedStage } from "./render/stages/captureSegmentedStage.js";
 import { resolveSegmentFrames } from "./render/segmentPlan.js";
+import {
+  computeSegmentPlanHash,
+  probeSegmentFrameCount,
+  readSegmentManifest,
+  segmentDirFor,
+  validateCompletedSegments,
+  writeSegmentManifest,
+  type SegmentManifest,
+} from "./render/segmentManifest.js";
 import { normalizeErrorMessage } from "../utils/errorMessage.js";
 import { formatCaptureFrameName } from "../utils/paths.js";
 import { findRenderHdrAutoPromotionTrigger, resolveEffectiveHdrMode } from "./render/hdrMode.js";
@@ -296,6 +306,10 @@ export interface RenderConfig {
    */
   fps: Fps;
   quality: "draft" | "standard" | "high";
+  /** Segmented capture: reuse segments recorded in a matching manifest (Phase 2b). */
+  resumeSegments?: boolean;
+  /** Segmented capture: keep renders/.hf-segments/<planHash> after a successful render. */
+  keepSegments?: boolean;
   /**
    * Output container format. Defaults to `"mp4"`; existing renders are
    * unaffected unless this field is set explicitly.
@@ -4292,6 +4306,56 @@ async function executeRenderPipeline(input: {
         const segmentedPlan = capturePlan;
         const captureFrameStart = Date.now();
         resetCaptureAttemptProgress(job);
+        const segmentFrames = resolveSegmentFrames(process.env);
+        // One binding for the hash and the encoder so the two cannot drift.
+        const segmentImageFormat = captureOptions.format || "jpeg";
+        const segmentPlanHash = computeSegmentPlanHash({
+          compositionHash: compositionHash ?? "",
+          cliVersion: process.env.npm_package_version ?? "dev",
+          totalFrames,
+          segmentFrames,
+          fps: job.config.fps,
+          width,
+          height,
+          codec: preset.codec,
+          preset: preset.preset,
+          quality: effectiveQuality,
+          bitrate: effectiveBitrate,
+          pixelFormat: preset.pixelFormat,
+          imageFormat: segmentImageFormat,
+          useGpu: job.config.useGpu === true,
+          // Device-scaled: the capture buffer, not the CSS composition size.
+          outputWidth: captureCompositionWidth ?? width,
+          outputHeight: captureCompositionHeight ?? height,
+          motionBlur: job.config.motionBlur ? JSON.stringify(job.config.motionBlur) : "",
+        });
+        const segmentDir = segmentDirFor(join(projectDir, "renders"), segmentPlanHash);
+        let completedSegments: ReadonlySet<number> = new Set<number>();
+        if (job.config.resumeSegments === true) {
+          const existing = readSegmentManifest(segmentDir);
+          if (existing) {
+            completedSegments = await validateCompletedSegments(existing, segmentPlanHash, (path) =>
+              probeSegmentFrameCount(path, extractMediaMetadata),
+            );
+            log.info(`[Render] resuming: ${completedSegments.size} segments complete`, {
+              segmentDir,
+            });
+          }
+          if (completedSegments.size === 0) {
+            rmSync(segmentDir, { recursive: true, force: true });
+          }
+        } else {
+          // Without --resume the directory is stale by definition: a previous
+          // run's segments must never be spliced into this output.
+          rmSync(segmentDir, { recursive: true, force: true });
+        }
+        const segmentManifest: SegmentManifest = readSegmentManifest(segmentDir) ?? {
+          version: 1,
+          planHash: segmentPlanHash,
+          totalFrames,
+          segmentFrames,
+          completed: [],
+        };
         const segmentedRes = await observeRenderStage(
           observability,
           "capture_segmented",
@@ -4320,7 +4384,7 @@ async function executeRenderPipeline(input: {
                 pixelFormat: preset.pixelFormat,
                 vp9CpuUsed: cfg.vp9CpuUsed,
                 useGpu: job.config.useGpu,
-                imageFormat: captureOptions.format || "jpeg",
+                imageFormat: segmentImageFormat,
                 hdr: preset.hdr,
                 // No hlsEncoderGopLock here: each segment sets its own GOP to
                 // its own length, and hls never reaches this route.
@@ -4331,7 +4395,16 @@ async function executeRenderPipeline(input: {
               assertNotAborted,
               onProgress,
               dedupPerfs,
-              segmentFrames: resolveSegmentFrames(process.env),
+              segmentFrames,
+              segmentDir,
+              completedSegments,
+              onSegmentComplete: (entry) => {
+                segmentManifest.completed = [
+                  ...segmentManifest.completed.filter((e) => e.index !== entry.index),
+                  { ...entry, completedAt: new Date().toISOString() },
+                ];
+                writeSegmentManifest(segmentDir, segmentManifest);
+              },
               updateCaptureObservability,
             }),
         );
@@ -4348,6 +4421,11 @@ async function executeRenderPipeline(input: {
           log.info(
             `[Render] Segmented capture complete: ${segmentedRes.segments} segment(s) concatenated.`,
           );
+          // Only after a successful capture: a failure leaves the directory
+          // in place, because that is exactly what --resume reads next time.
+          if (job.config.keepSegments !== true) {
+            rmSync(segmentDir, { recursive: true, force: true });
+          }
         } else {
           // Only the first segment's encoder can fail to spawn this way, so
           // nothing was captured: drop to the plain streaming plan and let

@@ -355,6 +355,22 @@ export default defineCommand({
         "Increase for complex compositions on slow hardware. Default: 45000 (45 s). " +
         "Env: PRODUCER_PLAYER_READY_TIMEOUT_MS.",
     },
+    resume: {
+      type: "boolean",
+      description:
+        "Segmented capture only (HF_SEGMENTED_CAPTURE=true): reuse segments a " +
+        "previous run of the same composition and settings already finished, " +
+        "recorded in renders/.hf-segments/<hash>/segments.json. Each reused " +
+        "segment is re-validated before it is skipped.",
+      default: false,
+    },
+    "keep-segments": {
+      type: "boolean",
+      description:
+        "Segmented capture only: keep renders/.hf-segments/<hash> after a " +
+        "successful render instead of deleting it.",
+      default: false,
+    },
     "low-memory-mode": {
       type: "boolean",
       description:
@@ -470,6 +486,10 @@ export interface RenderOptions {
   videoFrameFormat?: VideoFrameFormat;
   quiet: boolean;
   debug?: boolean;
+  /** Segmented capture: reuse a prior run's validated segments. */
+  resumeSegments?: boolean;
+  /** Segmented capture: keep the segment directory after success. */
+  keepSegments?: boolean;
   bestEffort?: boolean;
   browserPath?: string;
   variables?: Record<string, unknown>;
@@ -1049,6 +1069,8 @@ async function executeLocalRender(
       outputResolution: options.outputResolution,
       outputResolutionAspectAgnostic: options.outputResolutionAspectAgnostic,
       debug: options.debug,
+      resumeSegments: options.resumeSegments,
+      keepSegments: options.keepSegments,
       strictness: options.bestEffort === false ? "strict" : "best-effort",
     },
   });

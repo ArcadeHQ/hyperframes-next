@@ -12,7 +12,7 @@
  * This phase keeps ONE browser session for the whole render and no retry;
  * recycling and retry are 2c, multi-worker is 2d.
  */
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   captureFrameToBuffer,
@@ -74,6 +74,18 @@ export interface CaptureSegmentedStageInput {
   /** Mutated in place, same contract as the streaming stage. */
   dedupPerfs: CapturePerfSummary[];
   segmentFrames: number;
+  /** Stable directory for segments; defaults to `${workDir}/segments`. */
+  segmentDir?: string;
+  /** Indices the caller already validated as reusable (Phase 2b resume). */
+  completedSegments?: ReadonlySet<number>;
+  /** Called after each segment closes, so the caller can persist a manifest. */
+  onSegmentComplete?: (entry: {
+    index: number;
+    startFrame: number;
+    endFrame: number;
+    path: string;
+    bytes: number;
+  }) => void;
   /** Test seam; defaults to the real engine functions. */
   deps?: Partial<SegmentedStageDeps>;
   updateCaptureObservability?: (patch: {
@@ -96,8 +108,8 @@ export type CaptureSegmentedStageResult =
   | { success: false };
 
 /** Zero-padded so lexical order equals frame order in the concat list and on disk. */
-export function segmentOutputPath(workDir: string, index: number): string {
-  return join(workDir, "segments", `segment_${String(index).padStart(5, "0")}.mp4`);
+export function segmentOutputPath(segmentDir: string, index: number): string {
+  return join(segmentDir, `segment_${String(index).padStart(5, "0")}.mp4`);
 }
 
 /**
@@ -134,7 +146,8 @@ interface SegmentCaptureContext {
   cfg: EngineConfig;
   totalFrames: number;
   segmentCount: number;
-  workDir: string;
+  segmentDir: string;
+  skipped: number;
   streamingEncoderOptions: StreamingEncoderOptions;
   spawnEncoder: SegmentedStageDeps["spawnEncoder"];
   captureFrame: SegmentedStageDeps["captureFrame"];
@@ -142,11 +155,49 @@ interface SegmentCaptureContext {
   abortSignal: AbortSignal | undefined;
   assertNotAborted: () => void;
   onProgress?: ProgressCallback;
+  onSegmentComplete?: CaptureSegmentedStageInput["onSegmentComplete"];
+}
+
+/** The segment's frames, in order, into an already-spawned encoder. */
+async function captureSegmentFrames(
+  ctx: SegmentCaptureContext,
+  segment: SegmentSlice,
+  encoder: StreamingEncoder,
+): Promise<void> {
+  let lastProgressAt = Date.now();
+  for (let i = segment.startFrame; i < segment.endFrame; i++) {
+    ctx.assertNotAborted();
+    const time = (i * ctx.job.config.fps.den) / ctx.job.config.fps.num;
+    const { buffer } = await raceAgainstStall(
+      ctx.captureFrame(ctx.session, i, time),
+      ctx.stallTimeoutMs - (Date.now() - lastProgressAt),
+      {
+        captureMode: ctx.session.captureMode,
+        frameIndex: i,
+        totalFrames: ctx.totalFrames,
+        stallTimeoutMs: ctx.stallTimeoutMs,
+      },
+      ctx.abortSignal,
+    );
+    ensureFrameWritten(await encoder.writeFrame(buffer), i, encoder);
+    ctx.job.framesRendered = i + 1;
+    lastProgressAt = Date.now();
+
+    updateJobStatus(
+      ctx.job,
+      "rendering",
+      `Streaming frame ${i + 1}/${ctx.totalFrames} (segment ${segment.index + 1}/${ctx.segmentCount}` +
+        (ctx.skipped > 0 ? `, skipped ${ctx.skipped}` : "") +
+        ")",
+      Math.round(25 + ((i + 1) / ctx.totalFrames) * 55),
+      ctx.onProgress,
+    );
+  }
 }
 
 /** Capture one segment into its own encoder. Returns the encoder's encode ms. */
 async function captureSegment(ctx: SegmentCaptureContext, segment: SegmentSlice): Promise<number> {
-  const segmentPath = segmentOutputPath(ctx.workDir, segment.index);
+  const segmentPath = segmentOutputPath(ctx.segmentDir, segment.index);
   let encoder: StreamingEncoder;
   try {
     encoder = await ctx.spawnEncoder(
@@ -163,38 +214,21 @@ async function captureSegment(ctx: SegmentCaptureContext, segment: SegmentSlice)
 
   let encoderClosed = false;
   try {
-    let lastProgressAt = Date.now();
-    for (let i = segment.startFrame; i < segment.endFrame; i++) {
-      ctx.assertNotAborted();
-      const time = (i * ctx.job.config.fps.den) / ctx.job.config.fps.num;
-      const { buffer } = await raceAgainstStall(
-        ctx.captureFrame(ctx.session, i, time),
-        ctx.stallTimeoutMs - (Date.now() - lastProgressAt),
-        {
-          captureMode: ctx.session.captureMode,
-          frameIndex: i,
-          totalFrames: ctx.totalFrames,
-          stallTimeoutMs: ctx.stallTimeoutMs,
-        },
-        ctx.abortSignal,
-      );
-      ensureFrameWritten(await encoder.writeFrame(buffer), i, encoder);
-      ctx.job.framesRendered = i + 1;
-      lastProgressAt = Date.now();
-
-      updateJobStatus(
-        ctx.job,
-        "rendering",
-        `Streaming frame ${i + 1}/${ctx.totalFrames} (segment ${segment.index + 1}/${ctx.segmentCount})`,
-        Math.round(25 + ((i + 1) / ctx.totalFrames) * 55),
-        ctx.onProgress,
-      );
-    }
+    await captureSegmentFrames(ctx, segment, encoder);
     const encodeResult = await encoder.close();
     encoderClosed = true;
     if (!encodeResult.success) {
       throw encoderFailureError(`Segment ${segment.index} encode failed`, encodeResult);
     }
+    ctx.onSegmentComplete?.({
+      index: segment.index,
+      startFrame: segment.startFrame,
+      endFrame: segment.endFrame,
+      path: segmentPath,
+      // Recorded so resume can prove the file on disk is the one that
+      // finished; absent only in unit tests, whose fake encoder writes none.
+      bytes: existsSync(segmentPath) ? statSync(segmentPath).size : 0,
+    });
     return encodeResult.durationMs;
   } finally {
     // A throw above (capture failure, abort, write error) leaves ffmpeg
@@ -274,7 +308,13 @@ export async function runCaptureSegmentedStage(
   const { spawnEncoder, captureFrame, concat } = resolveDeps(input);
 
   const segments = planSegments(totalFrames, segmentFrames);
-  mkdirSync(join(workDir, "segments"), { recursive: true });
+  const segmentDir = input.segmentDir ?? join(workDir, "segments");
+  mkdirSync(segmentDir, { recursive: true });
+  const skip = input.completedSegments ?? new Set<number>();
+  // The first segment that still has to be captured. Only it can fall back to
+  // the plain streaming path on a spawn failure; by any later one, encoded
+  // segments exist that a fallback would throw away.
+  const firstPending = segments.find((s) => !skip.has(s.index));
   const session = await openSegmentedSession(input);
 
   let lastBrowserConsole: string[] = [];
@@ -295,7 +335,8 @@ export async function runCaptureSegmentedStage(
       cfg,
       totalFrames,
       segmentCount: segments.length,
-      workDir,
+      segmentDir,
+      skipped: skip.size,
       streamingEncoderOptions,
       spawnEncoder,
       captureFrame,
@@ -303,19 +344,22 @@ export async function runCaptureSegmentedStage(
       abortSignal,
       assertNotAborted,
       onProgress,
+      onSegmentComplete: input.onSegmentComplete,
     };
 
     for (const segment of segments) {
       assertNotAborted();
+      if (skip.has(segment.index)) {
+        segmentPaths.push(segmentOutputPath(segmentDir, segment.index));
+        log.info("[Render] segment skipped (resume)", { index: segment.index });
+        continue;
+      }
       updateCaptureObservability?.({ capturePath: "segmented", segmentIndex: segment.index });
       try {
         encodeMs += await captureSegment(ctx, segment);
       } catch (err) {
         if (!(err instanceof SegmentEncoderSpawnError)) throw err;
-        // Nothing captured yet, so the caller can still replan onto the plain
-        // streaming path. A later segment cannot: earlier segments are
-        // already encoded and would be discarded.
-        if (segment.index > 0) throw err.reason;
+        if (segment.index !== firstPending?.index) throw err.reason;
         log.warn(
           "[Render] Segment encoder spawn failed; falling back to single-encoder streaming.",
           {
@@ -327,7 +371,7 @@ export async function runCaptureSegmentedStage(
         );
         return { success: false };
       }
-      segmentPaths.push(segmentOutputPath(workDir, segment.index));
+      segmentPaths.push(segmentOutputPath(segmentDir, segment.index));
     }
 
     dedupPerfs.push(getCapturePerfSummary(session));
