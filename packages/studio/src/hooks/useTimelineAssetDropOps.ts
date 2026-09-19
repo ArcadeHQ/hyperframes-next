@@ -4,6 +4,8 @@
 // 600-line cap.
 import { useCallback, type MutableRefObject, type RefObject } from "react";
 import type { TimelineElement } from "../player";
+import type { TimelineDropPlacement } from "../player/components/timelineCallbacks";
+import { resolveDropTrack } from "../utils/timelineDropTrackInsert";
 import {
   buildTimelineAssetId,
   buildTimelineAssetInsertHtml,
@@ -23,6 +25,18 @@ import { commitTimelineCompositionInsertion } from "../utils/timelineComposition
 import { extendRootDurationInSource } from "../utils/rootDuration";
 import { deriveTimelineStoreKeyForDomId } from "../player/lib/timelineElementHelpers";
 import { selectAndRevealTimelineElement } from "../player/components/timelineDropReveal";
+import { selectTimelineRowElements } from "../player/hooks/useTimelineRowElements";
+import { usePlayerStore } from "../player/store/playerStore";
+
+/** The first uploaded file opens the new track (if asked); the rest land on the lane it landed on. */
+function fileDropPlacement(
+  index: number,
+  next: { start: number; track: number },
+  dropped: TimelineDropPlacement | undefined,
+  landedTrack: number | undefined,
+): TimelineDropPlacement {
+  return index === 0 ? { ...dropped, ...next } : { ...next, track: landedTrack ?? next.track };
+}
 
 interface UseTimelineAssetDropOpsOptions {
   projectIdRef: MutableRefObject<string | null>;
@@ -52,16 +66,16 @@ export function useTimelineAssetDropOps({
   observeProjectFileVersion,
 }: UseTimelineAssetDropOpsOptions) {
   // fallow-ignore-next-line complexity
-  const handleTimelineAssetDrop = useCallback(
+  const dropAssetAt = useCallback(
     // fallow-ignore-next-line complexity
     async (
       assetPath: string,
-      placement: Pick<TimelineElement, "start" | "track">,
+      placement: TimelineDropPlacement,
       durationOverride?: number,
-    ) => {
+    ): Promise<number | undefined> => {
       if (isRecordingRef?.current) {
         showToast("Cannot edit timeline while recording", "error");
-        return;
+        return undefined;
       }
       const pid = projectIdRef.current;
       if (!pid) throw new Error("No active project");
@@ -69,7 +83,7 @@ export function useTimelineAssetDropOps({
       const kind = getTimelineAssetKind(assetPath);
       if (!kind) {
         showToast("Only image, video, and audio assets can be dropped onto the timeline.");
-        return;
+        return undefined;
       }
 
       const targetPath = activeCompPath || "index.html";
@@ -91,9 +105,24 @@ export function useTimelineAssetDropOps({
         );
         const newElementZIndex = Math.max(1, relevantElements.length + 1);
 
+        const { source: sourceWithRoom, track } = resolveDropTrack({
+          source: originalContent,
+          // insertRow counts the rows the timeline shows, so plan against those.
+          elements: selectTimelineRowElements(
+            relevantElements,
+            usePlayerStore.getState().topLevelIds,
+          ),
+          placement,
+          dropped: {
+            id: newId,
+            tag: kind === "image" ? "img" : kind,
+            start: normalizedStart,
+            duration: normalizedDuration,
+          },
+        });
         const patchedContent = extendRootDurationInSource(
           insertTimelineAssetIntoSource(
-            originalContent,
+            sourceWithRoom,
             buildTimelineAssetInsertHtml({
               id: newId,
               hfId: `hf-${generateId()}`,
@@ -101,7 +130,7 @@ export function useTimelineAssetDropOps({
               kind,
               start: normalizedStart,
               duration: normalizedDuration,
-              track: placement.track,
+              track,
               zIndex: newElementZIndex,
               geometry: fitTimelineAssetGeometry(
                 null,
@@ -125,10 +154,12 @@ export function useTimelineAssetDropOps({
         selectAndRevealTimelineElement(deriveTimelineStoreKeyForDomId(newId, targetPath));
         forceReloadSdkSession?.();
         reloadPreview();
+        return track;
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to drop asset onto timeline";
         showToast(message);
+        return undefined;
       }
     },
     [
@@ -144,10 +175,17 @@ export function useTimelineAssetDropOps({
     ],
   );
 
+  const handleTimelineAssetDrop = useCallback(
+    async (assetPath: string, placement: TimelineDropPlacement, durationOverride?: number) => {
+      await dropAssetAt(assetPath, placement, durationOverride);
+    },
+    [dropAssetAt],
+  );
+
   // fallow-ignore-next-line complexity
   const handleTimelineFileDrop = useCallback(
     // fallow-ignore-next-line complexity
-    async (files: File[], placement?: Pick<TimelineElement, "start" | "track">) => {
+    async (files: File[], placement?: TimelineDropPlacement) => {
       if (isRecordingRef?.current) {
         showToast("Cannot edit timeline while recording", "error");
         return;
@@ -166,15 +204,18 @@ export function useTimelineAssetDropOps({
         placement ?? { start: 0, track: 0 },
         durations,
       );
+      let landedTrack: number | undefined;
       for (const [index, assetPath] of uploaded.entries()) {
-        await handleTimelineAssetDrop(
+        const next = placements[index] ?? placements[0];
+        const track = await dropAssetAt(
           assetPath,
-          placements[index] ?? placements[0],
+          fileDropPlacement(index, next, placement, landedTrack),
           durations[index],
         );
+        if (index === 0) landedTrack = track;
       }
     },
-    [handleTimelineAssetDrop, projectIdRef, uploadProjectFiles, isRecordingRef, showToast],
+    [dropAssetAt, projectIdRef, uploadProjectFiles, isRecordingRef, showToast],
   );
 
   const handleTimelineCompositionDrop = useCallback(
