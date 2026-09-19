@@ -42,7 +42,6 @@ vi.mock("./nle/NLEContext", () => ({
   useNLEContext: () => ({
     compositionStack: [],
     updateCompositionStack: vi.fn(),
-    containerRef: { current: null },
   }),
 }));
 vi.mock("./nle/useTimelineEditCallbacks", () => ({
@@ -53,7 +52,14 @@ vi.mock("./nle/PreviewOverlays", () => ({ PreviewOverlays: () => null }));
 vi.mock("./nle/TimelinePane", () => ({ TimelinePane: () => null }));
 vi.mock("../captions/components/CaptionTimeline", () => ({ CaptionTimeline: () => null }));
 
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+Object.assign(globalThis, {
+  IS_REACT_ACT_ENVIRONMENT: true,
+  ResizeObserver: class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+});
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -69,8 +75,7 @@ describe("EditorShell timeline selection sync", () => {
     act(() => {
       root.render(
         <EditorShell
-          left={null}
-          right={null}
+          panels={null}
           timelineToolbar={null}
           renderClipContent={() => null}
           handleTimelineElementDelete={vi.fn()}

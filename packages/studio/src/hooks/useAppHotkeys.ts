@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef } from "react";
 import { usePlayerStore } from "../player";
 import type { TimelineElement } from "../player";
 import type { DomEditSelection } from "../components/editor/domEditing";
-import type { LeftSidebarHandle } from "../components/sidebar/LeftSidebar";
 import { isTypingTarget } from "../utils/typingTarget";
 import { useCaptionStore } from "../captions/store";
 import {
@@ -88,7 +87,6 @@ interface UseAppHotkeysParams {
   showToast: (message: string, tone?: "error" | "info") => void;
   syncHistoryPreviewAfterApply: UseEditHistoryActionsOptions["syncHistoryPreviewAfterApply"];
   waitForPendingDomEditSaves: () => Promise<void>;
-  leftSidebarRef: React.RefObject<LeftSidebarHandle | null>;
   handleCopy: () => boolean;
   handlePaste: () => Promise<void>;
   handleCut: () => Promise<boolean>;
@@ -125,7 +123,6 @@ export function useAppHotkeys({
   showToast,
   syncHistoryPreviewAfterApply,
   waitForPendingDomEditSaves,
-  leftSidebarRef,
   handleCopy,
   handlePaste,
   handleCut,
@@ -204,7 +201,6 @@ export function useAppHotkeys({
     onToggleRecording,
     onGroupSelection,
     onUngroupSelection,
-    leftSidebarRef,
     domEditSelectionRef,
     showToast,
   };

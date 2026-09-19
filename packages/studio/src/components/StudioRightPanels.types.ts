@@ -1,5 +1,5 @@
 /**
- * Props for StudioRightPanel.
+ * Props for StudioRightPanels.
  *
  * Kept beside the component rather than inside it: the panel is at the file-size
  * cap, and this block is the part that changes least, so moving it keeps the
@@ -14,8 +14,7 @@ import type { UseSlideshowPersistParams } from "../hooks/useSlideshowPersist";
 import type { AddMediaOverlayHandler } from "./editor/propertyPanelTypes";
 import type { ToggleHiddenHandler } from "../utils/studioHelpers";
 
-export interface StudioRightPanelProps extends StudioEditPersistenceProps {
-  designPanelActive: boolean;
+export interface StudioRightPanelsProps extends StudioEditPersistenceProps {
   activeBlockParams?: {
     blockName: string;
     blockTitle: string;
@@ -23,6 +22,8 @@ export interface StudioRightPanelProps extends StudioEditPersistenceProps {
     compositionPath: string;
   } | null;
   onCloseBlockParams?: () => void;
+  /** Drops the block-params view without touching the dock (selection or leaving Design). */
+  onDismissBlockParams: () => void;
   recordingState?: "idle" | "recording" | "preview";
   recordingDuration?: number;
   onToggleRecording?: () => void;

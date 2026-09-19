@@ -17,6 +17,7 @@ import type { GestureRecordingState } from "./editor/GestureRecordControl";
 import { useTimelineSelectionPreviewSync } from "../hooks/useTimelineSelectionPreviewSync";
 import { StudioAgentTools } from "../webmcp/StudioAgentTools";
 import type { TimelineDropPlacement } from "../player/components/timelineCallbacks";
+import { Dock } from "./dock/Dock";
 
 type RenderClipContent = (
   element: TimelineElement,
@@ -26,10 +27,8 @@ type RenderClipContent = (
 // The seven move/resize/split/razor handlers come from TimelineEditCallbackDeps
 // (shared with useTimelineEditCallbacks); the rest are drop + wiring props.
 export interface EditorShellProps extends TimelineEditCallbackDeps {
-  /** Left sidebar (media/library), rendered in the top row. */
-  left: ReactNode;
-  /** Right panel (inspector/design) or null when collapsed, in the top row. */
-  right: ReactNode;
+  /** Dock.Panel elements for every panel except the built-in preview and timeline. */
+  panels: ReactNode;
   timelineToolbar: ReactNode;
   renderClipContent: RenderClipContent;
   handleTimelineElementDelete: (element: TimelineElement) => Promise<void> | void;
@@ -72,12 +71,11 @@ export interface EditorShellProps extends TimelineEditCallbackDeps {
   gestureOverlay?: ReactNode;
 }
 
-// The CapCut-style shell: [left | preview | right] in a top row, with a
-// full-width timeline spanning the bottom. Owns the shared player +
-// composition-stack state via NLEProvider so both rows share one player.
+// The dockable shell: every panel lives in one Dock, arranged by the user's
+// saved layout. Owns the shared player + composition-stack state via
+// NLEProvider so every panel shares one player.
 export function EditorShell({
-  left,
-  right,
+  panels,
   timelineToolbar,
   renderClipContent,
   handleTimelineElementDelete,
@@ -178,8 +176,8 @@ export function EditorShell({
           }}
         >
           <EditorShellBody
-            left={left}
-            right={right}
+            projectId={projectId}
+            panels={panels}
             captionEditMode={captionEditMode}
             onSelectTimelineElement={handleTimelineElementSelect}
             onPreviewBlockDrop={handlePreviewBlockDrop}
@@ -213,8 +211,8 @@ export function EditorShell({
 }
 
 interface EditorShellBodyProps {
-  left: ReactNode;
-  right: ReactNode;
+  panels: ReactNode;
+  projectId: string;
   captionEditMode: boolean;
   previewOverlay: ReactNode;
   onSelectTimelineElement: (element: TimelineElement | null) => void;
@@ -239,8 +237,8 @@ interface EditorShellBodyProps {
 }
 
 function EditorShellBody({
-  left,
-  right,
+  panels,
+  projectId,
   captionEditMode,
   previewOverlay,
   onSelectTimelineElement,
@@ -257,7 +255,7 @@ function EditorShellBody({
   onDuplicateClip,
   canPasteClip,
 }: EditorShellBodyProps) {
-  const { compositionStack, updateCompositionStack, containerRef } = useNLEContext();
+  const { compositionStack, updateCompositionStack } = useNLEContext();
 
   // The caption track's blocks are seek targets; CaptionTimeline took an onSeek
   // prop that nothing ever passed, so clicking a block did nothing.
@@ -277,7 +275,6 @@ function EditorShellBody({
 
   return (
     <div
-      ref={containerRef}
       // Shell canvas is a step LIGHTER than the near-black panel cards so the
       // gaps between panels read as visible seams (CapCut-style).
       className="flex flex-col flex-1 min-h-0 bg-panel-surface"
@@ -287,47 +284,46 @@ function EditorShellBody({
       {/* Renders nothing; exposes Studio's state to an agentic browser. Mounted
           here rather than in App because it needs the DomEdit contexts. */}
       <StudioAgentTools />
-      {/* Top row: [left | preview | right] — outer padding + the 8px resize
-          seams give the panels CapCut-style separation on the dark canvas. */}
-      <div className="flex flex-row flex-1 min-h-0 px-px pt-px">
-        {left}
-        <div className="flex-1 min-w-0 flex flex-col relative">
-          <PreviewPane
-            previewOverlay={previewOverlay}
+      <Dock.Root projectId={projectId}>
+        <Dock.Panel id="preview">
+          <div className="relative flex h-full w-full min-w-0 flex-col">
+            <PreviewPane
+              previewOverlay={previewOverlay}
+              onSelectTimelineElement={onSelectTimelineElement}
+              onPreviewBlockDrop={onPreviewBlockDrop}
+            />
+          </div>
+        </Dock.Panel>
+        <Dock.Panel id="timeline">
+          <TimelinePane
+            timelineToolbar={timelineToolbar}
+            renderClipContent={renderClipContent}
+            onFileDrop={onFileDrop}
+            onAssetDrop={onAssetDrop}
+            onBlockDrop={onBlockDrop}
+            onCompositionDrop={onCompositionDrop}
+            onDeleteElement={onDeleteElement}
+            onCopyClip={onCopyClip}
+            onPasteClip={onPasteClip}
+            onDuplicateClip={onDuplicateClip}
+            canPasteClip={canPasteClip}
             onSelectTimelineElement={onSelectTimelineElement}
-            onPreviewBlockDrop={onPreviewBlockDrop}
+            timelineFooter={
+              captionEditMode ? (
+                <div className="border-t border-neutral-800/30 shrink-0" style={{ height: 60 }}>
+                  <div className="flex items-center gap-1.5 px-2 py-0.5">
+                    <span className="text-[9px] font-medium text-neutral-500 uppercase tracking-wider">
+                      Captions
+                    </span>
+                  </div>
+                  <CaptionTimeline pixelsPerSecond={100} onSeek={seekCaptionTime} />
+                </div>
+              ) : undefined
+            }
           />
-        </div>
-        {right}
-      </div>
-
-      {/* Full-width timeline row */}
-      <TimelinePane
-        timelineToolbar={timelineToolbar}
-        renderClipContent={renderClipContent}
-        onFileDrop={onFileDrop}
-        onAssetDrop={onAssetDrop}
-        onBlockDrop={onBlockDrop}
-        onCompositionDrop={onCompositionDrop}
-        onDeleteElement={onDeleteElement}
-        onCopyClip={onCopyClip}
-        onPasteClip={onPasteClip}
-        onDuplicateClip={onDuplicateClip}
-        canPasteClip={canPasteClip}
-        onSelectTimelineElement={onSelectTimelineElement}
-        timelineFooter={
-          captionEditMode ? (
-            <div className="border-t border-neutral-800/30 shrink-0" style={{ height: 60 }}>
-              <div className="flex items-center gap-1.5 px-2 py-0.5">
-                <span className="text-[9px] font-medium text-neutral-500 uppercase tracking-wider">
-                  Captions
-                </span>
-              </div>
-              <CaptionTimeline pixelsPerSecond={100} onSeek={seekCaptionTime} />
-            </div>
-          ) : undefined
-        }
-      />
+        </Dock.Panel>
+        {panels}
+      </Dock.Root>
     </div>
   );
 }

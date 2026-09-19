@@ -5,7 +5,6 @@ import type { TimelineElement } from "../player";
 import type { ImportedFontAsset } from "../components/editor/fontAssets";
 import type { RightPanelTab } from "../utils/studioHelpers";
 import type { PatchTarget } from "../utils/sourcePatcher";
-import type { SidebarTab } from "../components/sidebar/LeftSidebar";
 import type { Composition } from "@hyperframes/sdk";
 import { sdkCutoverPersist, sdkDeletePersist, type PublishSdkSession } from "../utils/sdkCutover";
 import { runResolverShadow, recordResolverParity } from "../utils/sdkResolverShadow";
@@ -53,8 +52,6 @@ export interface UseDomEditSessionParams extends DomEditTimelineParams {
   reloadPreview: () => void;
   setRefreshKey: React.Dispatch<React.SetStateAction<number>>;
   openSourceForSelection?: (sourceFile: string, target: PatchTarget) => void;
-  selectSidebarTab?: (tab: SidebarTab) => void;
-  getSidebarTab?: () => SidebarTab;
   sdkSession?: Composition | null;
   publishSdkSession?: PublishSdkSession;
   forceReloadSdkSession?: () => void;
@@ -97,8 +94,6 @@ export function useDomEditSession({
   reloadPreview,
   setRefreshKey: _setRefreshKey,
   openSourceForSelection,
-  selectSidebarTab,
-  getSidebarTab,
   sdkSession,
   publishSdkSession,
   forceReloadSdkSession,
@@ -430,8 +425,6 @@ export function useDomEditSession({
     applyDomSelection,
     buildDomSelectionFromTarget,
     openSourceForSelection,
-    selectSidebarTab,
-    getSidebarTab,
     updateGsapProperty,
     updateGsapMeta,
     deleteGsapAnimation,

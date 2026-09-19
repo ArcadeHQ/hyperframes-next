@@ -33,7 +33,6 @@ function callbacks() {
     onResetKeyframes: vi.fn(() => true),
     onDeleteSelectedKeyframes: vi.fn(),
     showToast: vi.fn(),
-    leftSidebarRef: { current: null },
     domEditSelectionRef: { current: null },
   };
 }

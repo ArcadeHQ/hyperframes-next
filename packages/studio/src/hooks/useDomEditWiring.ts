@@ -16,7 +16,7 @@ import { useGsapAnimationFetchFallback } from "./useGsapAnimationFetchFallback";
 import { useGsapInteractionFailureTelemetry } from "./useGsapInteractionFailureTelemetry";
 import { useGsapSelectionHandlers } from "./useGsapSelectionHandlers";
 import type { PatchTarget } from "../utils/sourcePatcher";
-import type { SidebarTab } from "../components/sidebar/LeftSidebar";
+import { useDockLayoutStore } from "../components/dock/dockLayoutStore";
 
 export interface UseDomEditWiringParams {
   projectId: string | null;
@@ -43,8 +43,6 @@ export interface UseDomEditWiringParams {
   ) => void;
   buildDomSelectionFromTarget: (element: HTMLElement) => Promise<DomEditSelection | null>;
   openSourceForSelection?: (sourceFile: string, target: PatchTarget) => void;
-  selectSidebarTab?: (tab: SidebarTab) => void;
-  getSidebarTab?: () => SidebarTab;
   // GSAP script commit ops (from useGsapScriptCommits)
   updateGsapProperty: (
     sel: DomEditSelection,
@@ -132,8 +130,6 @@ export function useDomEditWiring({
   applyDomSelection,
   buildDomSelectionFromTarget,
   openSourceForSelection,
-  selectSidebarTab,
-  getSidebarTab,
   updateGsapProperty,
   updateGsapMeta,
   deleteGsapAnimation,
@@ -157,16 +153,16 @@ export function useDomEditWiring({
 
   const onClickToSource = useCallback(
     (selection: DomEditSelection) => {
-      if (!openSourceForSelection || !selectSidebarTab) return;
+      if (!openSourceForSelection) return;
       if (!selection.sourceFile) return;
-      selectSidebarTab("code");
+      useDockLayoutStore.getState().activatePanel("code");
       openSourceForSelection(selection.sourceFile, {
         id: selection.id,
         selector: selection.selector,
         selectorIndex: selection.selectorIndex,
       });
     },
-    [openSourceForSelection, selectSidebarTab],
+    [openSourceForSelection],
   );
 
   // ── DOM selection -> timeline element sync ──
@@ -267,7 +263,6 @@ export function useDomEditWiring({
     syncPreviewHotkeys,
     applyStudioManualEditsToPreviewRef,
     openSourceForSelection,
-    getSidebarTab,
     gsapCacheVersion,
   });
 

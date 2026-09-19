@@ -1,7 +1,6 @@
 import { useCallback } from "react";
-import type { StudioRightPanelProps } from "./StudioRightPanel.types";
+import type { StudioRightPanelsProps } from "./StudioRightPanels.types";
 
-export type { StudioRightPanelProps };
 import { PropertyPanel } from "./editor/PropertyPanel";
 import { LayersPanel } from "./editor/LayersPanel";
 import { CaptionPropertyPanel } from "../captions/components/CaptionPropertyPanel";
@@ -9,14 +8,18 @@ import { BlockParamsPanel } from "./editor/BlockParamsPanel";
 import { RenderQueuePanel } from "./renders/RenderQueuePanel";
 import { SlideshowPanel } from "./panels/SlideshowPanel";
 import { VariablesPanel } from "./panels/VariablesPanel";
-import { RightPanelTabs, type RightPanelTabDescriptor } from "./RightPanelTabs";
+import { Dock } from "./dock/Dock";
+import { useDockLayoutStore } from "./dock/dockLayoutStore";
 import type { RenderJob } from "./renders/useRenderQueue";
-import { STUDIO_FLAT_INSPECTOR_ENABLED } from "./editor/manualEditingAvailability";
 import { useSlideshowPersist } from "../hooks/useSlideshowPersist";
 import { useSlideshowTabState } from "../hooks/useSlideshowTabState";
+import {
+  useBlockParamsDismissal,
+  useCaptionDesignFocus,
+  useSlideshowDockPanel,
+} from "../hooks/useRightPanelIntents";
 import { DesignPanelPromoteProvider } from "./DesignPanelPromoteProvider";
 import { useStudioPlaybackContext, useStudioShellContext } from "../contexts/StudioContext";
-import { usePanelLayoutContext } from "../contexts/PanelLayoutContext";
 import { useFileManagerContext } from "../contexts/FileManagerContext";
 import { useDomEditContext } from "../contexts/DomEditContext";
 import { usePlayerStore } from "../player";
@@ -27,14 +30,13 @@ import {
 } from "./studioColorGradingScope";
 import { timelineKeysForSelections } from "../utils/studioHelpers";
 import { canHideSelections } from "../utils/timelineInspector";
-import { useInspectorSplitResize } from "../hooks/useInspectorSplitResize";
 import { useRemoveBackground } from "../hooks/useRemoveBackground";
 
 // fallow-ignore-next-line complexity
-export function StudioRightPanel({
-  designPanelActive,
+export function StudioRightPanels({
   activeBlockParams,
   onCloseBlockParams,
+  onDismissBlockParams,
   recordingState,
   recordingDuration,
   onToggleRecording,
@@ -46,20 +48,7 @@ export function StudioRightPanel({
   onToggleElementHidden,
   onAutoGroupCarveSources,
   onAddMediaOverlay,
-}: StudioRightPanelProps) {
-  const {
-    rightWidth,
-    adjustPanelWidth,
-    rightPanelTab,
-    setRightPanelTab,
-    rightInspectorPanes,
-    toggleRightInspectorPane,
-    setExclusiveRightInspectorPane,
-    handlePanelResizeStart,
-    handlePanelResizeMove,
-    handlePanelResizeEnd,
-  } = usePanelLayoutContext();
-
+}: StudioRightPanelsProps) {
   const {
     previewIframeRef,
     projectId,
@@ -154,41 +143,20 @@ export function StudioRightPanel({
     coalesceKey: activeCompPath ? `slideshow-notes:${activeCompPath}` : "slideshow-notes",
   });
 
-  const {
-    layersPanePercent,
-    splitContainerRef,
-    handleInspectorSplitResizeStart,
-    handleInspectorSplitResizeMove,
-    handleInspectorSplitResizeEnd,
-  } = useInspectorSplitResize();
-
   const renderJobs = renderQueue.jobs as RenderJob[];
-  const inspectorTabActive = rightPanelTab === "design" || rightPanelTab === "layers";
-
+  const slideshowVisible = useDockLayoutStore((state) => state.visiblePanels.has("slideshow"));
   const { isSlideshowComposition, slideshowScenes } = useSlideshowTabState({
     editingFileContent: editingFile?.content,
     previewIframeRef,
     refreshKey,
-    rightPanelTab,
-    setRightPanelTab,
+    slideshowVisible,
   });
-  const designPaneOpen = inspectorTabActive && rightInspectorPanes.design && designPanelActive;
-  const layersPaneOpen = inspectorTabActive && rightInspectorPanes.layers;
-
-  const handleInspectorPaneButtonClick = (pane: "design" | "layers") => {
-    if (!inspectorTabActive) {
-      setRightPanelTab(pane);
-      return;
-    }
-    // Flat inspector: Layers always renders full-height by itself (see the
-    // render branch below), so the two panes are mutually exclusive here —
-    // otherwise both tabs could show "active" while only one actually shows.
-    if (STUDIO_FLAT_INSPECTOR_ENABLED) {
-      setExclusiveRightInspectorPane(pane);
-      return;
-    }
-    toggleRightInspectorPane(pane);
-  };
+  useSlideshowDockPanel(isSlideshowComposition);
+  useBlockParamsDismissal({
+    hasBlockParams: activeBlockParams != null,
+    onDismiss: onDismissBlockParams,
+  });
+  useCaptionDesignFocus(captionEditMode);
 
   const handleApplyColorGradingScope = useCallback(
     async (scope: ColorGradingScope, value: string | null) =>
@@ -337,165 +305,48 @@ export function StudioRightPanel({
     </DesignPanelPromoteProvider>
   );
 
-  const renderQueuePanel = <RenderQueuePanel />;
-
-  // Slideshow appears only for a slideshow composition, so the strip is built
-  // rather than written out: a tab that is not in this list is not reachable by
-  // an arrow key either.
-  const inspectorTabs: RightPanelTabDescriptor[] = [
-    {
-      id: "design",
-      label: "Design",
-      tooltip: "Element styles and properties",
-      active: designPaneOpen,
-      onSelect: () => handleInspectorPaneButtonClick("design"),
-    },
-    {
-      id: "layers",
-      label: "Layers",
-      tooltip: "Composition layer stack",
-      active: layersPaneOpen,
-      onSelect: () => handleInspectorPaneButtonClick("layers"),
-    },
-    {
-      id: "renders",
-      label: renderJobs.length > 0 ? `Renders (${renderJobs.length})` : "Renders",
-      tooltip: "Render queue and exports",
-      active: rightPanelTab === "renders",
-      onSelect: () => setRightPanelTab("renders"),
-    },
-    ...(isSlideshowComposition
-      ? [
-          {
-            id: "slideshow",
-            label: "Slideshow",
-            tooltip: "Slideshow branching editor",
-            active: rightPanelTab === "slideshow",
-            onSelect: () => setRightPanelTab("slideshow"),
-          },
-        ]
-      : []),
-    {
-      id: "variables",
-      label: "Variables",
-      tooltip: "Template variables — declare, preview with values",
-      active: rightPanelTab === "variables",
-      onSelect: () => setRightPanelTab("variables"),
-    },
-  ];
+  let designBody = propertyPanel;
+  if (captionEditMode) {
+    designBody = <CaptionPropertyPanel iframeRef={previewIframeRef} />;
+  } else if (activeBlockParams) {
+    designBody = (
+      <BlockParamsPanel
+        blockName={activeBlockParams.blockName}
+        blockTitle={activeBlockParams.blockTitle}
+        params={activeBlockParams.params}
+        compositionPath={activeBlockParams.compositionPath}
+        onClose={onCloseBlockParams ?? (() => {})}
+      />
+    );
+  }
 
   return (
     <>
-      {/* Vertical resize divider: 3px visible seam, 13px hit zone via the inner div. */}
-      <div
-        role="separator"
-        aria-label="Resize inspector panel"
-        aria-orientation="vertical"
-        tabIndex={0}
-        className="group relative w-[3px] shrink-0 cursor-col-resize outline-hidden focus-visible:bg-studio-accent/20"
-        style={{ touchAction: "none" }}
-        onPointerDown={(e) => handlePanelResizeStart("right", e)}
-        onPointerMove={handlePanelResizeMove}
-        onPointerUp={handlePanelResizeEnd}
-        onPointerCancel={handlePanelResizeEnd}
-        onKeyDown={(e) => {
-          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-          e.preventDefault();
-          // Panel is right-anchored: ArrowLeft grows it, ArrowRight shrinks it.
-          const delta = e.key === "ArrowLeft" ? 16 : -16;
-          adjustPanelWidth("right", delta);
-        }}
+      <Dock.Panel id="design">{designBody}</Dock.Panel>
+      <Dock.Panel id="layers">
+        <LayersPanel />
+      </Dock.Panel>
+      <Dock.Panel
+        id="renders"
+        title={renderJobs.length > 0 ? `Renders (${renderJobs.length})` : undefined}
       >
-        {/* Asymmetric hit zone: 8px into the preview's p-2 gutter (the only dead
-            space), the 3px seam, 2px into the card. Stops short of the 24px WCAG
-            2.5.8 target because the next pixel each way is live. */}
-        <div className="absolute inset-y-0 left-[-8px] w-[13px]" />
-        {/* Visible hairline */}
-        <div className="absolute top-1/2 left-0 h-[52px] w-[3px] -translate-y-1/2 bg-white/12 transition-colors group-hover:bg-white/18 group-active:bg-white/24" />
-      </div>
-      <div
-        className="flex min-w-0 shrink-0 flex-col overflow-hidden rounded-lg border border-neutral-800 bg-neutral-950"
-        style={{ width: rightWidth }}
-      >
-        {captionEditMode ? (
-          <CaptionPropertyPanel iframeRef={previewIframeRef} />
-        ) : (
-          <>
-            <RightPanelTabs tabs={inspectorTabs} activateOnFocus={STUDIO_FLAT_INSPECTOR_ENABLED} />
-            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-              {rightPanelTab === "block-params" && activeBlockParams ? (
-                <BlockParamsPanel
-                  blockName={activeBlockParams.blockName}
-                  blockTitle={activeBlockParams.blockTitle}
-                  params={activeBlockParams.params}
-                  compositionPath={activeBlockParams.compositionPath}
-                  onClose={onCloseBlockParams ?? (() => {})}
-                />
-              ) : rightPanelTab === "slideshow" && isSlideshowComposition ? (
-                <SlideshowPanel
-                  scenes={slideshowScenes}
-                  onPersist={onPersistSlideshow}
-                  onPersistNotes={onPersistSlideshowNotes}
-                />
-              ) : rightPanelTab === "variables" ? (
-                <VariablesPanel
-                  sdkSession={sdkSession}
-                  publishSdkSession={publishSdkSession}
-                  reloadPreview={reloadPreview}
-                  recordEdit={recordEdit}
-                />
-              ) : layersPaneOpen && designPaneOpen && !STUDIO_FLAT_INSPECTOR_ENABLED ? (
-                <div ref={splitContainerRef} className="flex h-full min-h-0 min-w-0 flex-col">
-                  <div
-                    className="min-h-[120px] overflow-hidden"
-                    style={{ flexBasis: `${layersPanePercent}%`, flexShrink: 0 }}
-                  >
-                    <LayersPanel />
-                  </div>
-                  <div
-                    role="separator"
-                    aria-label="Resize Layers and Design panes"
-                    aria-orientation="horizontal"
-                    className="group flex h-2 shrink-0 cursor-row-resize items-center justify-center border-y border-neutral-800 bg-neutral-900"
-                    style={{ touchAction: "none" }}
-                    onPointerDown={handleInspectorSplitResizeStart}
-                    onPointerMove={handleInspectorSplitResizeMove}
-                    onPointerUp={handleInspectorSplitResizeEnd}
-                    onPointerCancel={handleInspectorSplitResizeEnd}
-                  >
-                    <div className="h-px w-10 rounded-full bg-white/12 transition-colors group-hover:bg-white/24 group-active:bg-studio-accent/70" />
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-hidden">{propertyPanel}</div>
-                </div>
-              ) : layersPaneOpen ? (
-                <LayersPanel />
-              ) : designPaneOpen ? (
-                propertyPanel
-              ) : inspectorTabActive ? (
-                // Inspector tab selected but no pane can render (panes toggled
-                // off, or inspector inactive during playback/recording): show an
-                // explanation instead of silently rendering the render queue
-                // under a highlighted inspector tab.
-                <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-                  <p className="text-xs text-neutral-500">
-                    Inspector is unavailable right now — select the Design or Layers pane above, or
-                    pause playback/recording to inspect elements.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setRightPanelTab("renders")}
-                    className="h-7 rounded-md border border-neutral-800 px-3 text-[11px] font-medium text-neutral-400 transition-colors hover:border-neutral-700 hover:text-neutral-200 active:scale-[0.98]"
-                  >
-                    Show Renders
-                  </button>
-                </div>
-              ) : (
-                renderQueuePanel
-              )}
-            </div>
-          </>
-        )}
-      </div>
+        <RenderQueuePanel />
+      </Dock.Panel>
+      <Dock.Panel id="variables">
+        <VariablesPanel
+          sdkSession={sdkSession}
+          publishSdkSession={publishSdkSession}
+          reloadPreview={reloadPreview}
+          recordEdit={recordEdit}
+        />
+      </Dock.Panel>
+      <Dock.Panel id="slideshow">
+        <SlideshowPanel
+          scenes={slideshowScenes}
+          onPersist={onPersistSlideshow}
+          onPersistNotes={onPersistSlideshowNotes}
+        />
+      </Dock.Panel>
     </>
   );
 }

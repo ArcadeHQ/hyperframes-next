@@ -5,7 +5,6 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAppHotkeys } from "../../hooks/useAppHotkeys";
 import { usePlayerStore } from "../../player/store/playerStore";
-import type { LeftSidebarHandle } from "../sidebar/LeftSidebar";
 import type { DomEditSelection } from "./domEditing";
 import { SnapToolbar } from "./SnapToolbar";
 import { usePreviewGuidesStore } from "./previewGuidesStore";
@@ -31,7 +30,6 @@ function renderToolbar(onSnapChange = vi.fn()) {
 function AppHotkeyHarness() {
   const domEditSelectionRef = useRef<DomEditSelection | null>(null);
   const clearDomSelectionRef = useRef<() => void>(() => undefined);
-  const leftSidebarRef = useRef<LeftSidebarHandle | null>(null);
 
   useAppHotkeys({
     handleTimelineElementsDelete: vi.fn(async () => {}),
@@ -50,7 +48,6 @@ function AppHotkeyHarness() {
     showToast: vi.fn(),
     syncHistoryPreviewAfterApply: vi.fn(async () => undefined),
     waitForPendingDomEditSaves: vi.fn(async () => undefined),
-    leftSidebarRef,
     handleCopy: vi.fn(() => false),
     handlePaste: vi.fn(async () => undefined),
     handleCut: vi.fn(async () => false),

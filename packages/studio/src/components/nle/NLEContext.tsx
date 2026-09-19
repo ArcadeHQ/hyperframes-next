@@ -4,16 +4,10 @@ import { useTimelinePlayer, usePlayerStore } from "../../player";
 import type { TimelineElement } from "../../player";
 import type { CompositionLevel } from "./CompositionBreadcrumb";
 import { useCompositionStack } from "./useCompositionStack";
-import { MIN_TIMELINE_H, fitTimelineHeight } from "../../utils/fitPanels";
 import { setCompositionSourceMap } from "../editor/domEditingDom";
 import { ensureMotionPathPluginLoaded } from "../../utils/gsapSoftReload";
-import { readStudioUiPreferences, writeStudioUiPreferences } from "../../utils/studioUiPreferences";
 import { useAssetPreviewStore } from "../../utils/assetPreviewStore";
 import { createStableContext } from "../../utils/hmrStableContext";
-
-// Timeline gets a generous default height so the preview isn't oversized and the
-// tracks have room to breathe (CapCut-style). Users can still drag the divider.
-const DEFAULT_TIMELINE_H = 360;
 
 export function shouldDisableTimelineWhileCompositionLoading(compositionLoading: boolean): boolean {
   return compositionLoading;
@@ -34,10 +28,6 @@ export interface NLEContextValue {
   handleDrillDown: (element: TimelineElement) => void;
   compIdToSrc: Map<string, string>;
   // layout state
-  timelineH: number;
-  setTimelineH: React.Dispatch<React.SetStateAction<number>>;
-  persistTimelineH: (height: number) => void;
-  containerRef: React.RefObject<HTMLDivElement | null>;
   // composition loading
   compositionLoading: boolean;
   setCompositionLoading: (loading: boolean) => void;
@@ -256,35 +246,6 @@ export function NLEProvider({
     });
   }, [compIdToSrc]);
 
-  // Resizable timeline height — persisted alongside zoom/pan so the user's
-  // workspace layout survives reloads.
-  const [timelineH, setTimelineH] = useState(() => {
-    const stored = readStudioUiPreferences().timelineHeight;
-    return stored !== undefined && stored >= MIN_TIMELINE_H ? stored : DEFAULT_TIMELINE_H;
-  });
-  const persistTimelineH = useCallback((height: number) => {
-    writeStudioUiPreferences({ timelineHeight: Math.round(height) });
-  }, []);
-  const containerRef = useRef<HTMLDivElement>(null);
-  // A height persisted on a tall window can exceed this window's container and
-  // collapse the flex-1 preview to 0px. Observing the container rather than
-  // clamping once at mount is what makes a window RESIZED after load behave the
-  // same as one loaded at that size: dragging 760 -> 520 tall used to leave the
-  // timeline at its stored 429px and the preview at 47px.
-  useEffect(() => {
-    const element = containerRef.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const reconcile = () => {
-      const containerH = element.getBoundingClientRect().height;
-      if (!containerH) return;
-      setTimelineH((prev) => fitTimelineHeight(containerH, prev));
-    };
-    reconcile();
-    const observer = new ResizeObserver(reconcile);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
   const hasLoadedOnceRef = useRef(false);
   const [compositionLoading, setCompositionLoadingRaw] = useState(true);
   const setCompositionLoading = useCallback((loading: boolean) => {
@@ -317,10 +278,6 @@ export function NLEProvider({
     handleNavigateComposition,
     handleDrillDown,
     compIdToSrc,
-    timelineH,
-    setTimelineH,
-    persistTimelineH,
-    containerRef,
     compositionLoading,
     setCompositionLoading,
     timelineDisabled,

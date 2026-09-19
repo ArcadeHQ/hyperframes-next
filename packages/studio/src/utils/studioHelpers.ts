@@ -22,13 +22,6 @@ export type RightPanelTab =
   | "block-params"
   | "slideshow"
   | "variables";
-export type RightInspectorPane = "layers" | "design";
-
-export interface RightInspectorPanes {
-  layers: boolean;
-  design: boolean;
-}
-
 export interface AgentModalAnchorPoint {
   x: number;
   y: number;

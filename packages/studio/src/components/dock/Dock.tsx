@@ -69,8 +69,17 @@ function snapshot(api: DockviewApi): DockSnapshot {
     openPanels.add(panel.id);
     if (panel.api.isVisible && panel.group.api.isVisible) visiblePanels.add(panel.id);
   }
+  const groupActivePanels = api.groups.flatMap((group) => {
+    const id = group.activePanel?.id;
+    return isPanelId(id) ? [id] : [];
+  });
   const active = api.activePanel?.id;
-  return { openPanels, visiblePanels, activePanel: isPanelId(active) ? active : null };
+  return {
+    openPanels,
+    visiblePanels,
+    activePanel: isPanelId(active) ? active : null,
+    groupActivePanels,
+  };
 }
 
 function createController(api: DockviewApi): DockController {
@@ -206,10 +215,11 @@ function Panel({ id, title, children }: { id: PanelId; title?: string; children:
   const element = useSlots().slots[id];
   const visible = useDockLayoutStore((state) => state.visiblePanels.has(id));
   const controller = useDockLayoutStore((state) => state.controller);
+  const open = useDockLayoutStore((state) => state.openPanels.has(id));
   const label = title ?? PANEL_DEFINITIONS[id].title;
   useEffect(() => {
-    controller?.setTitle(id, label);
-  }, [controller, id, label]);
+    if (open) controller?.setTitle(id, label);
+  }, [controller, id, label, open]);
   const definition: PanelDefinition = PANEL_DEFINITIONS[id];
   const shown = visible || definition.keepMounted;
   return element && shown ? createPortal(children, element) : null;

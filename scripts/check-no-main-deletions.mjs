@@ -288,6 +288,31 @@ export const ALLOWED_DELETIONS = new Map([
     "docs/public/catalog/assets/e234267390ffd6ff.woff2",
     "#4056 regenerated catalog font files are content-hashed, so a re-hashed file replaces the old one",
   ],
+  [
+    "packages/studio/src/components/StudioLeftSidebar.tsx",
+    "replaced by StudioLeftPanels.tsx, which mounts the left-zone panels as dock panels instead of a fixed sidebar",
+  ],
+  [
+    "packages/studio/src/components/sidebar/LeftSidebar.tsx",
+    "replaced by the dock-mounted CompositionsPanel/StudioLeftPanels; sidebar tab-switching is now the dock's own tab strip",
+  ],
+  [
+    "packages/studio/src/components/sidebar/LeftSidebar.storage.test.ts",
+    "tested the fixed-sidebar tab persistence removed with LeftSidebar.tsx; the dock persists its own layout",
+  ],
+  [
+    "packages/studio/src/components/nle/TimelineResizeDivider.tsx",
+    "the timeline's own resize divider; panel sizing is now the dock's sash",
+  ],
+  [
+    "packages/studio/src/hooks/useInspectorSplitResize.ts",
+    "resized the old fixed Layers/Design split pane, removed with the split-inspector layout",
+  ],
+  [
+    "packages/studio/src/utils/fitPanels.ts",
+    "computed fixed left/right panel widths for the old EditorShell layout; the dock sizes its own panels",
+  ],
+  ["packages/studio/src/utils/fitPanels.test.ts", "tests for fitPanels.ts, removed with it"],
   ...[
     "docs/studio/storyboard.mdx",
     "packages/studio-server/src/routes/storyboard.test.ts",

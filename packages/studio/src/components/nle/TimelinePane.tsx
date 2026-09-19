@@ -2,7 +2,6 @@ import { useCallback, type ReactNode } from "react";
 import { Timeline } from "../../player";
 import type { TimelineElement } from "../../player";
 import type { BlockedTimelineEditIntent } from "../../player/components/timelineEditing";
-import { TimelineResizeDivider } from "./TimelineResizeDivider";
 import { useTimelineEditContext } from "../../contexts/TimelineEditContext";
 import { trackStudioExpandedClipEdit } from "../../telemetry/events";
 import { useNLEContext } from "./NLEContext";
@@ -132,10 +131,6 @@ export function TimelinePane({
     handleDrillDown,
     compositionStack,
     updateCompositionStack,
-    timelineH,
-    setTimelineH,
-    persistTimelineH,
-    containerRef,
     timelineDisabled,
     timelineSessionEpoch,
   } = useNLEContext();
@@ -254,72 +249,56 @@ export function TimelinePane({
   );
 
   return (
-    <>
-      <TimelineResizeDivider
-        timelineH={timelineH}
-        setTimelineH={setTimelineH}
-        persistTimelineH={persistTimelineH}
-        containerRef={containerRef}
-        disabled={timelineDisabled}
-      />
-
-      {/* Timeline section — inner padding (not margin) keeps the divider's
-          height math exact while giving the panel a gap from the shell edges. */}
+    <div className="relative flex h-full flex-col" aria-disabled={timelineDisabled || undefined}>
       <div
-        className="relative flex flex-col shrink-0 px-px pb-px"
-        style={{ height: timelineH }}
-        aria-disabled={timelineDisabled || undefined}
+        className="flex flex-col flex-1 min-h-0 overflow-hidden rounded-lg border border-neutral-800/50 bg-neutral-950"
+        onDoubleClick={(e) => {
+          if ((e.target as HTMLElement).closest("[data-clip]")) return;
+          if (timelineDisabled) return;
+          if (compositionStack.length > 1) {
+            updateCompositionStack((prev) => prev.slice(0, -1));
+          }
+        }}
       >
-        <div
-          className="flex flex-col flex-1 min-h-0 overflow-hidden rounded-lg border border-neutral-800/50 bg-neutral-950"
-          onDoubleClick={(e) => {
-            if ((e.target as HTMLElement).closest("[data-clip]")) return;
-            if (timelineDisabled) return;
-            if (compositionStack.length > 1) {
-              updateCompositionStack((prev) => prev.slice(0, -1));
-            }
-          }}
-        >
-          <div className="shrink-0">{timelineToolbar}</div>
-          <Timeline
-            sessionEpoch={timelineSessionEpoch}
-            onSeek={seek}
-            onDrillDown={handleDrillDown}
-            renderClipContent={renderClipContent}
-            onFileDrop={onFileDrop}
-            onDeleteElement={handleDeleteElement}
-            onAssetDrop={onAssetDrop}
-            onBlockDrop={onBlockDrop}
-            onCompositionDrop={onCompositionDrop}
-            onMoveElement={handleMoveElement}
-            onMoveElements={handleMoveElements}
-            onResizeElement={handleResizeElement}
-            onResizeElements={handleResizeElements}
-            onBlockedEditAttempt={onBlockedEditAttempt}
-            onSplitElement={handleSplitElement}
-            onSelectElement={onSelectTimelineElement}
-            onCopyClip={onCopyClip}
-            onPasteClip={onPasteClip}
-            onDuplicateClip={onDuplicateClip}
-            canPasteClip={canPasteClip}
-          />
-        </div>
-        {timelineFooter && <div className="shrink-0">{timelineFooter}</div>}
-        {timelineDisabled && (
-          <div
-            className="absolute inset-0 z-30 cursor-not-allowed bg-black/18 flex items-center justify-center"
-            data-testid="timeline-loading-disabled-overlay"
-            role="status"
-            onPointerDown={(event) => event.preventDefault()}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => event.preventDefault()}
-          >
-            <span className="rounded-md bg-neutral-900/90 px-2.5 py-1 text-[11px] text-neutral-400">
-              Loading composition…
-            </span>
-          </div>
-        )}
+        <div className="shrink-0">{timelineToolbar}</div>
+        <Timeline
+          sessionEpoch={timelineSessionEpoch}
+          onSeek={seek}
+          onDrillDown={handleDrillDown}
+          renderClipContent={renderClipContent}
+          onFileDrop={onFileDrop}
+          onDeleteElement={handleDeleteElement}
+          onAssetDrop={onAssetDrop}
+          onBlockDrop={onBlockDrop}
+          onCompositionDrop={onCompositionDrop}
+          onMoveElement={handleMoveElement}
+          onMoveElements={handleMoveElements}
+          onResizeElement={handleResizeElement}
+          onResizeElements={handleResizeElements}
+          onBlockedEditAttempt={onBlockedEditAttempt}
+          onSplitElement={handleSplitElement}
+          onSelectElement={onSelectTimelineElement}
+          onCopyClip={onCopyClip}
+          onPasteClip={onPasteClip}
+          onDuplicateClip={onDuplicateClip}
+          canPasteClip={canPasteClip}
+        />
       </div>
-    </>
+      {timelineFooter && <div className="shrink-0">{timelineFooter}</div>}
+      {timelineDisabled && (
+        <div
+          className="absolute inset-0 z-30 cursor-not-allowed bg-black/18 flex items-center justify-center"
+          data-testid="timeline-loading-disabled-overlay"
+          role="status"
+          onPointerDown={(event) => event.preventDefault()}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => event.preventDefault()}
+        >
+          <span className="rounded-md bg-neutral-900/90 px-2.5 py-1 text-[11px] text-neutral-400">
+            Loading composition…
+          </span>
+        </div>
+      )}
+    </div>
   );
 }

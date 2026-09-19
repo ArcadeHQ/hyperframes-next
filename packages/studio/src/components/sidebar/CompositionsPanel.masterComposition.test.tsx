@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePlayerStore } from "../../player/store/playerStore";
-import { LeftSidebar } from "./LeftSidebar";
+import { CompositionsPanel } from "./CompositionsPanel";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 (
@@ -20,23 +20,20 @@ afterEach(() => {
   usePlayerStore.setState({ thumbnailContentRevision: 0 });
 });
 
-describe("LeftSidebar root badge source", () => {
+describe("CompositionsPanel root badge source", () => {
   it("derives the root badge from the filtered compositions list, not the raw file tree", () => {
-    // `fileTree` includes a non-composition index.html (a vendored preset) that the
-    // server's filtered `compositions` list excludes — the badge must source from
-    // `compositions`, not the raw file tree.
+    // The project's raw file tree can hold a non-composition index.html (a vendored
+    // preset); the badge must source from the server's filtered `compositions` list.
     const host = document.createElement("div");
     document.body.append(host);
     root = createRoot(host);
     act(() => {
       root?.render(
-        <LeftSidebar
+        <CompositionsPanel
           projectId="demo"
           compositions={["hero.html"]}
-          assets={[]}
-          fileTree={["index.html", "hero.html"]}
           activeComposition={null}
-          onSelectComposition={vi.fn()}
+          onSelect={vi.fn()}
         />,
       );
     });

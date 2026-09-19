@@ -2,7 +2,7 @@ import { automationOwnsKey } from "./useAutomationSelectionKeyboard";
 import { usePlayerStore } from "../player";
 import type { TimelineElement } from "../player";
 import type { DomEditSelection } from "../components/editor/domEditing";
-import type { LeftSidebarHandle } from "../components/sidebar/LeftSidebar";
+import { useDockLayoutStore } from "../components/dock/dockLayoutStore";
 import { isTypingTarget } from "../utils/typingTarget";
 import { isEditableTarget } from "../utils/timelineDiscovery";
 import { shouldIgnoreHistoryShortcut } from "../utils/studioHelpers";
@@ -52,7 +52,6 @@ export interface HotkeyCallbacks {
   onToggleRecording?: () => void;
   onGroupSelection?: () => void;
   onUngroupSelection?: () => void;
-  leftSidebarRef: React.RefObject<LeftSidebarHandle | null>;
   domEditSelectionRef: React.MutableRefObject<DomEditSelection | null>;
   showToast: (message: string, tone?: "error" | "info") => void;
 }
@@ -84,13 +83,13 @@ export function dispatchModifierKey(
   if (event.key === "1") {
     event.preventDefault();
     trackStudioEvent("keyboard_shortcut", { action: "tab_compositions" });
-    cb.leftSidebarRef.current?.selectTab("compositions");
+    useDockLayoutStore.getState().activatePanel("compositions");
     return true;
   }
   if (event.key === "2") {
     event.preventDefault();
     trackStudioEvent("keyboard_shortcut", { action: "tab_assets" });
-    cb.leftSidebarRef.current?.selectTab("assets");
+    useDockLayoutStore.getState().activatePanel("assets");
     return true;
   }
 

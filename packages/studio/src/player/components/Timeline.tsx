@@ -448,7 +448,7 @@ export const Timeline = memo(function Timeline({
   return (
     <div
       ref={setContainerRef}
-      aria-label="Timeline"
+      aria-label="Timeline track view"
       data-timeline-element-count={expandedElements.length}
       className={`relative border-t select-none h-full overflow-hidden ${assetDrop.isDragOver ? "ring-1 ring-inset ring-studio-accent/60" : ""} ${activeTool === "razor" ? "cursor-crosshair" : shiftHeld ? "cursor-crosshair" : "cursor-default"}`}
       onMouseMove={updateRazorGuide}

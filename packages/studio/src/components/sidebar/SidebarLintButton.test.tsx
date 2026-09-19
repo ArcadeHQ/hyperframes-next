@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LeftSidebar } from "./LeftSidebar";
+import { SidebarLintButton } from "./SidebarLintButton";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 (
@@ -24,23 +24,18 @@ function renderBadge(lintHasError: boolean): HTMLElement | null {
   root = createRoot(host);
   act(() => {
     root?.render(
-      <LeftSidebar
-        projectId="demo"
-        compositions={["index.html"]}
-        assets={[]}
-        fileTree={["index.html"]}
-        activeComposition={null}
-        onSelectComposition={vi.fn()}
+      <SidebarLintButton
         onLint={vi.fn()}
-        lintFindingCount={2}
-        lintHasError={lintHasError}
+        linting={false}
+        findingCount={2}
+        hasError={lintHasError}
       />,
     );
   });
   return host.querySelector<HTMLElement>("[data-lint-badge]");
 }
 
-describe("LeftSidebar lint badge", () => {
+describe("SidebarLintButton badge", () => {
   it("pulses, and stops for reduced motion, while an error finding exists", () => {
     const badge = renderBadge(true);
     expect(badge?.dataset.lintBadge).toBe("error");

@@ -54,7 +54,10 @@ const applySideMinimums = vi.mocked(dockLayout.applySideMinimums);
 
 let root: Root | null = null;
 
-function mount(projectId: string | null) {
+function mount(
+  projectId: string | null,
+  titles: Partial<Record<(typeof PANEL_IDS)[number], string>> = {},
+) {
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -62,7 +65,7 @@ function mount(projectId: string | null) {
     root?.render(
       <Dock.Root projectId={projectId}>
         {PANEL_IDS.map((id) => (
-          <Dock.Panel key={id} id={id}>
+          <Dock.Panel key={id} id={id} title={titles[id]}>
             <div data-testid={`content-${id}`}>{id}</div>
           </Dock.Panel>
         ))}
@@ -140,6 +143,17 @@ describe("Dock on React 19", () => {
     });
     expect(useDockLayoutStore.getState().openPanels.has("renders")).toBe(true);
     expect(host.querySelector('[data-testid="content-renders"]')).not.toBeNull();
+  });
+
+  it("keeps a panel's custom title when it is closed and reopened", async () => {
+    const host = mount("p1", { renders: "Renders (2)" });
+    expect(host.textContent).toContain("Renders (2)");
+    act(() => useDockLayoutStore.getState().closePanel("renders"));
+    await act(async () => {
+      useDockLayoutStore.getState().togglePanel("renders");
+      await Promise.resolve();
+    });
+    expect(host.textContent).toContain("Renders (2)");
   });
 
   it("reopens a closed panel as a tab of its zone's group, not a new group", () => {

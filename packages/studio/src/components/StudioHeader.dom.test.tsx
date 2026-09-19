@@ -33,7 +33,7 @@ vi.mock("../contexts/StudioContext", () => ({
 
 vi.mock("../contexts/PanelLayoutContext", () => ({
   usePanelLayoutContext: () => ({
-    effectiveRightCollapsed: false,
+    rightCollapsed: false,
     setRightCollapsed: vi.fn(),
     setRightPanelTab: vi.fn(),
   }),
