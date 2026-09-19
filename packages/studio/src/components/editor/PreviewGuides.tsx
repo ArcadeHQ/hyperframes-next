@@ -8,7 +8,7 @@ interface PreviewGuidesProps {
 }
 
 const TICKS = Array.from({ length: 11 }, (_, i) => i * 10);
-const INK = "rgba(255,255,255,0.7)";
+const INK = "color-mix(in srgb, white 70%, transparent)";
 
 /** Ruler and safe-margin boxes drawn over the preview pane, never inside the composition. */
 export const PreviewGuides = memo(function PreviewGuides({ iframeRef }: PreviewGuidesProps) {

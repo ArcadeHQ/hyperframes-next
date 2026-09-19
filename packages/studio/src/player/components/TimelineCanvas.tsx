@@ -179,8 +179,8 @@ export const TimelineCanvas = memo(function TimelineCanvas(props: TimelineCanvas
             left: props.contentOrigin + draggedClip.previewStart * props.pps,
             width: Math.max(draggedClip.element.duration * props.pps, 4),
             height: draggedClipHeight,
-            border: "1px solid rgba(60,230,172,0.55)",
-            background: "rgba(60,230,172,0.12)",
+            border: "1px solid color-mix(in srgb, var(--color-accent) 55%, transparent)",
+            background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
             borderRadius: 4,
             zIndex: 30,
           }}
@@ -199,8 +199,8 @@ export const TimelineCanvas = memo(function TimelineCanvas(props: TimelineCanvas
             left: props.contentOrigin + props.dropPreview.start * props.pps,
             width: DROP_PREVIEW_SECONDS * props.pps,
             height: TRACK_H - CLIP_Y * 2,
-            border: "1px solid rgba(60,230,172,0.55)",
-            background: "rgba(60,230,172,0.12)",
+            border: "1px solid color-mix(in srgb, var(--color-accent) 55%, transparent)",
+            background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
             borderRadius: 4,
             zIndex: 30,
           }}
