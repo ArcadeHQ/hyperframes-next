@@ -467,6 +467,9 @@ async function retryAfterTargetLoss(
     { worker: worker.id, error: err instanceof Error ? err.message : String(err) },
   );
   run.deps.removeFile(segmentPath);
+  // Side effect worth knowing: recycling resets the worker's sessionSegments,
+  // so a retry also restarts the cadence clock. Intended: the fresh browser
+  // is as new as a cadence restart would have made it.
   await recycleWorkerSession(run, worker, "retry");
   run.totals.encodeMs += await captureSegment(worker.ctx, segment);
 }
@@ -494,6 +497,38 @@ async function runOneSegment(
   return "done";
 }
 
+/**
+ * A full resume hit: nothing to capture, so no browser round-trip. The probe
+ * the orchestrator handed in is still ours to close, as the worker finally
+ * would have done.
+ */
+async function concatResumedRun(
+  run: SegmentRun,
+  segmentPaths: string[],
+): Promise<CaptureSegmentedStageResult> {
+  const { input, deps } = run;
+  input.log.info("[Render] every segment already complete (resume); concatenating without capture");
+  if (input.probeSession) await deps.closeSession(input.probeSession);
+  await concatSegments(
+    deps.concat,
+    segmentPaths,
+    input.videoOnlyPath,
+    input.abortSignal,
+    input.cfg,
+  );
+  return {
+    success: true,
+    encodeMs: 0,
+    probeSession: null,
+    lastBrowserConsole: [],
+    workerCount: run.workerCount,
+    segments: run.segments.length,
+    segmentPaths,
+    segmentRetries: 0,
+    browserRecycles: 0,
+  };
+}
+
 export async function runCaptureSegmentedStage(
   input: CaptureSegmentedStageInput,
 ): Promise<CaptureSegmentedStageResult> {
@@ -505,11 +540,7 @@ export async function runCaptureSegmentedStage(
   mkdirSync(segmentDir, { recursive: true });
   const skip = input.completedSegments ?? new Set<number>();
   const pending = segments.filter((s) => !skip.has(s.index));
-  for (const segment of segments) {
-    if (skip.has(segment.index)) {
-      log.info("[Render] segment skipped (resume)", { index: segment.index });
-    }
-  }
+  for (const index of skip) log.info("[Render] segment skipped (resume)", { index });
   const run: SegmentRun = {
     input,
     deps,
@@ -525,6 +556,7 @@ export async function runCaptureSegmentedStage(
   // Built from the plan, not from completion order: workers finish out of
   // order, so the concat list must not depend on who finished when.
   const segmentPaths = segments.map((s) => segmentOutputPath(segmentDir, s.index));
+  if (pending.length === 0) return concatResumedRun(run, segmentPaths);
   let fellBackToStreaming = false;
 
   const workers: SegmentWorker[] = [];

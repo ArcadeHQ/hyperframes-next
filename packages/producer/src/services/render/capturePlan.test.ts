@@ -53,6 +53,49 @@ describe("CapturePlan", () => {
     expect(initial.kind).toBe("sdr_streaming");
   });
 
+  it("retries interleaved parallel streaming at one worker, never N contiguous", () => {
+    // The non-DE router's plan: N workers, interleaved, default routing.
+    const routed = createCapturePlan({
+      workerCount: 4,
+      forceScreenshot: false,
+      forceParallelStream: true,
+      useStreamingEncode: true,
+      useLayeredComposite: false,
+      usePageSideCompositing: false,
+      hasHdrContent: false,
+      needsAlpha: false,
+    });
+    expect(routed).toMatchObject({
+      kind: "sdr_streaming",
+      forceParallelStream: true,
+      routing: { kind: "default" },
+    });
+    const next = replanAfterFailure(routed, { kind: "capture_failure", memoryExhaustion: false });
+    // Not `workerCount: 4, forceParallelStream: false` — that is contiguous
+    // streaming, the serialising shape interleaving exists to avoid.
+    expect(next).toMatchObject({
+      kind: "sdr_streaming",
+      workerCount: 1,
+      forceParallelStream: false,
+      forceScreenshot: true,
+    });
+
+    // A plan that was never interleaved keeps its worker count on retry.
+    const plain = createCapturePlan({
+      workerCount: 4,
+      forceScreenshot: false,
+      forceParallelStream: false,
+      useStreamingEncode: true,
+      useLayeredComposite: false,
+      usePageSideCompositing: false,
+      hasHdrContent: false,
+      needsAlpha: false,
+    });
+    expect(
+      replanAfterFailure(plain, { kind: "capture_failure", memoryExhaustion: false }).workerCount,
+    ).toBe(4);
+  });
+
   it("makes page-side compositing force screenshot capture", () => {
     const plan = createCapturePlan({
       workerCount: 1,

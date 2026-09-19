@@ -355,6 +355,32 @@ describe("runCaptureSegmentedStage", () => {
     );
   });
 
+  it("concats without opening a browser when every segment is already complete", async () => {
+    const create = mock(async () => fakeSession(99));
+    const closeSession = mock(async () => {});
+    const concat = mock(async () => ({ success: true as const }));
+    const input = fakeStageInput({ totalFrames: 3 });
+    const stableDir = join(fixtureRoot, "stable-all");
+    const result = await runCaptureSegmentedStage({
+      ...input,
+      segmentFrames: 1,
+      segmentDir: stableDir,
+      completedSegments: new Set([0, 1, 2]),
+      sessionFactory: { create },
+      deps: { concat, closeSession },
+    });
+    expect(result.success).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    // The probe handed in by the orchestrator is still closed on this path.
+    expect(closeSession).toHaveBeenCalledWith(input.probeSession);
+    expect(concat).toHaveBeenCalledWith(
+      [0, 1, 2].map((i) => segmentOutputPath(stableDir, i)),
+      join(fixtureRoot, "video-only.mp4"),
+      undefined,
+      expect.anything(),
+    );
+  });
+
   it("can fall back when the first PENDING segment fails to spawn on a resume", async () => {
     // Segment 0 is already done, so segment 1 is the first one this run has to
     // capture; nothing new is on disk yet, so the plain streaming path is
