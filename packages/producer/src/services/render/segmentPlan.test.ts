@@ -45,6 +45,7 @@ describe("resolveSegmentFrames", () => {
   it("reads HF_SEGMENT_FRAMES and clamps to the minimum", () => {
     expect(resolveSegmentFrames({ HF_SEGMENT_FRAMES: "600" })).toBe(600);
     expect(resolveSegmentFrames({ HF_SEGMENT_FRAMES: "5" })).toBe(MIN_SEGMENT_FRAMES);
+    expect(resolveSegmentFrames({ HF_SEGMENT_FRAMES: "-100" })).toBe(MIN_SEGMENT_FRAMES);
     expect(resolveSegmentFrames({ HF_SEGMENT_FRAMES: "abc" })).toBe(DEFAULT_SEGMENT_FRAMES);
     expect(resolveSegmentFrames({ HF_SEGMENT_FRAMES: "12.7" })).toBe(DEFAULT_SEGMENT_FRAMES);
   });

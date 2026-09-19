@@ -4354,6 +4354,12 @@ async function executeRenderPipeline(input: {
           // the branch below run the render normally.
           capturePlan = replanAfterFailure(capturePlan, { kind: "streaming_unavailable" });
           syncCapturePlan();
+          // The stage closed every session it opened in its own finally,
+          // including a reused probe. Drop the reference so the streaming
+          // branch below opens a fresh session instead of re-initialising a
+          // closed one and failing a stage later with a puzzling
+          // "page closed" (review finding on the Phase 2a PR).
+          probeSession = null;
           observability.checkpoint(
             "capture_segmented",
             "segment encoder spawn failed; falling back to single-encoder streaming",

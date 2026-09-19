@@ -308,16 +308,21 @@ describe("runCaptureSegmentedStage", () => {
     });
   });
 
-  it("returns success:false when the first encoder cannot spawn", async () => {
+  it("returns success:false when the first encoder cannot spawn, and has closed the probe", async () => {
     const spawnEncoder = mock(async () => {
       throw new Error("ffmpeg missing");
     });
+    closeCaptureSession.mockClear();
+    const input = fakeStageInput({ totalFrames: 3 });
     const result = await runCaptureSegmentedStage({
-      ...fakeStageInput({ totalFrames: 3 }),
+      ...input,
       segmentFrames: 3,
       deps: { spawnEncoder },
     });
     expect(result).toEqual({ success: false });
+    // The orchestrator falls through to the streaming plan on this result and
+    // must not hand it the same session: the stage's finally has closed it.
+    expect(closeCaptureSession.mock.calls.map((c) => c[0])).toContain(input.probeSession);
   });
 
   it("throws when a later encoder fails to close cleanly", async () => {
