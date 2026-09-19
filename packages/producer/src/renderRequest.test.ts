@@ -345,3 +345,25 @@ describe("RenderRequest", () => {
     });
   });
 });
+
+describe("segmented resume flags", () => {
+  it("carries resumeSegments and keepSegments from the request into the render config", () => {
+    const req = createRenderRequest({
+      projectDir: "/project",
+      outputPath: "/output/video.mp4",
+      engineConfig: { ...DEFAULT_CONFIG },
+      options: {
+        fps: { num: 30, den: 1 },
+        quality: "high",
+        format: "mp4",
+        gifLoop: 0,
+        strictness: "best-effort",
+        resumeSegments: true,
+        keepSegments: true,
+      },
+    });
+    const config = renderConfigFromRequest(req);
+    expect(config.resumeSegments).toBe(true);
+    expect(config.keepSegments).toBe(true);
+  });
+});

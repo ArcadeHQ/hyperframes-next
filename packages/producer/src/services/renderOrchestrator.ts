@@ -4307,6 +4307,8 @@ async function executeRenderPipeline(input: {
         const captureFrameStart = Date.now();
         resetCaptureAttemptProgress(job);
         const segmentFrames = resolveSegmentFrames(process.env);
+        // One binding for the hash and the encoder so the two cannot drift.
+        const segmentImageFormat = captureOptions.format || "jpeg";
         const segmentPlanHash = computeSegmentPlanHash({
           compositionHash: compositionHash ?? "",
           cliVersion: process.env.npm_package_version ?? "dev",
@@ -4320,7 +4322,12 @@ async function executeRenderPipeline(input: {
           quality: effectiveQuality,
           bitrate: effectiveBitrate,
           pixelFormat: preset.pixelFormat,
-          imageFormat: captureOptions.format || "jpeg",
+          imageFormat: segmentImageFormat,
+          useGpu: job.config.useGpu === true,
+          // Device-scaled: the capture buffer, not the CSS composition size.
+          outputWidth: captureCompositionWidth ?? width,
+          outputHeight: captureCompositionHeight ?? height,
+          motionBlur: job.config.motionBlur ? JSON.stringify(job.config.motionBlur) : "",
         });
         const segmentDir = segmentDirFor(join(projectDir, "renders"), segmentPlanHash);
         let completedSegments: ReadonlySet<number> = new Set<number>();
@@ -4377,7 +4384,7 @@ async function executeRenderPipeline(input: {
                 pixelFormat: preset.pixelFormat,
                 vp9CpuUsed: cfg.vp9CpuUsed,
                 useGpu: job.config.useGpu,
-                imageFormat: captureOptions.format || "jpeg",
+                imageFormat: segmentImageFormat,
                 hdr: preset.hdr,
                 // No hlsEncoderGopLock here: each segment sets its own GOP to
                 // its own length, and hls never reaches this route.

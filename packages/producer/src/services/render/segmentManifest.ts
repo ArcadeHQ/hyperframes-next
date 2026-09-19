@@ -41,6 +41,13 @@ export interface SegmentPlanHashInput {
   bitrate: string | undefined;
   pixelFormat: string | undefined;
   imageFormat: string;
+  /** Hardware encoder or not: h264_nvenc and libx264 both report codec "h264" but produce different bytes. */
+  useGpu: boolean;
+  /** Device-scaled capture size; `width`/`height` are the composition's CSS size. */
+  outputWidth: number;
+  outputHeight: number;
+  /** Serialised motion-blur options, or "" when off; sample count and shutter change every pixel. */
+  motionBlur: string;
 }
 
 const MANIFEST_FILENAME = "segments.json";
@@ -60,6 +67,9 @@ export function computeSegmentPlanHash(input: SegmentPlanHashInput): string {
     input.bitrate ?? "",
     input.pixelFormat ?? "",
     input.imageFormat,
+    input.useGpu ? "gpu" : "cpu",
+    `${input.outputWidth}x${input.outputHeight}`,
+    input.motionBlur,
   ].join(" ");
   return createHash("sha256").update(ordered).digest("hex").slice(0, 16);
 }

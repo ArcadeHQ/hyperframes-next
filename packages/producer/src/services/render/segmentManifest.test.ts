@@ -27,6 +27,10 @@ const hashInput: SegmentPlanHashInput = {
   bitrate: undefined,
   pixelFormat: "yuv420p",
   imageFormat: "jpeg",
+  useGpu: false,
+  outputWidth: 1920,
+  outputHeight: 1080,
+  motionBlur: "",
 };
 
 describe("computeSegmentPlanHash", () => {
@@ -53,6 +57,17 @@ describe("computeSegmentPlanHash", () => {
     expect(computeSegmentPlanHash({ ...hashInput, bitrate: "8M" })).not.toBe(a);
     expect(computeSegmentPlanHash({ ...hashInput, pixelFormat: "yuv420p10le" })).not.toBe(a);
     expect(computeSegmentPlanHash({ ...hashInput, imageFormat: "png" })).not.toBe(a);
+    // Review findings on the Phase 2b PR: three byte-affecting inputs that
+    // used to be missing. NVENC and libx264 both report codec "h264"; a DPR
+    // change captures at a different pixel size than the composition's; a
+    // motion-blur sample count changes every averaged frame.
+    expect(computeSegmentPlanHash({ ...hashInput, useGpu: true })).not.toBe(a);
+    expect(
+      computeSegmentPlanHash({ ...hashInput, outputWidth: 3840, outputHeight: 2160 }),
+    ).not.toBe(a);
+    expect(computeSegmentPlanHash({ ...hashInput, motionBlur: '{"samplesPerFrame":32}' })).not.toBe(
+      a,
+    );
   });
 
   it("does not collide across adjacent field boundaries", () => {
