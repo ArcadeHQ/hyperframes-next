@@ -2,7 +2,7 @@
   "source": "heygen-com/hyperframes",
   "skills": {
     "embedded-captions": {
-      "hash": "4023b0b051ba1e75",
+      "hash": "f1b298aa899d86df",
       "files": 142
     },
     "faceless-explainer": {
@@ -18,11 +18,11 @@
       "files": 4
     },
     "hyperframes": {
-      "hash": "d0a114a8f894758e",
+      "hash": "ffacb7af2a96d788",
       "files": 26
     },
     "hyperframes-animation": {
-      "hash": "4225f299e6ff9a0e",
+      "hash": "492f6f39edf2a8e5",
       "files": 121
     },
     "hyperframes-audio": {
@@ -34,7 +34,7 @@
       "files": 11
     },
     "hyperframes-core": {
-      "hash": "3e29cc2454953b05",
+      "hash": "054fe5577b064927",
       "files": 11
     },
     "hyperframes-creative": {
@@ -49,8 +49,12 @@
       "hash": "51e6dba95a8dfb45",
       "files": 12
     },
+    "hyperframes-studio": {
+      "hash": "b063eaa9eb1e4b9b",
+      "files": 1
+    },
     "media-use": {
-      "hash": "4531919cdbda573e",
+      "hash": "8f21655cd07a62ea",
       "files": 158
     },
     "motion-graphics": {
@@ -58,7 +62,7 @@
       "files": 23
     },
     "music-to-video": {
-      "hash": "7fad41aa135aea23",
+      "hash": "e69f4646ef354be9",
       "files": 169
     },
     "pr-to-video": {
@@ -70,7 +74,7 @@
       "files": 30
     },
     "remotion-to-hyperframes": {
-      "hash": "65222f2d894e8776",
+      "hash": "c8eb6f48889f5c06",
       "files": 77
     },
     "slideshow": {
