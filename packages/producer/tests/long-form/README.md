@@ -132,6 +132,26 @@ streaming (both drawElement capture). Segmentation buys bounded scratch,
 resumability and blast radius, not speed; threading the worker-encode loop
 through the segmented stage is the follow-up that would close the gap.
 
+### Known cost: a narrower retry surface than plain streaming
+
+Segmented capture retries one thing: a Chrome target loss, once, on a fresh
+session (Phase 2c). It has no orchestrator-level fallback. A drawElement
+self-verify miss, a sequential stall, an encoder failure on a segment after the
+first, or a concat failure ends the render, where the plain streaming path would
+have re-run it on a fresh screenshot session. Opting a specific composition into
+`HF_SEGMENTED_CAPTURE=true` therefore trades some resilience for the bounded
+scratch and resume. Wiring the streaming path's failure classification into the
+segmented branch is the other follow-up before the R4 flip.
+
+### Operational note: `--resume` state lives in the project directory
+
+Segments are written to `<project>/renders/.hf-segments/<planHash>/` rather than
+the ephemeral work directory, and they are deliberately left in place after a
+failed render because that is what `--resume` reads. A project that iterates on
+a long render grows by one segment directory per distinct plan hash until a run
+succeeds without `--keep-segments`, which removes its own hash directory. Stale
+hash directories from earlier settings are not swept.
+
 ## PRINFRA-694 gate for the R3 flip
 
 R3 turns the interleaved parallel-stream router on for screenshot capture, so
