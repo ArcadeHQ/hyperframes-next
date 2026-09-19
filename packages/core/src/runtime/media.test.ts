@@ -4,10 +4,18 @@ import {
   readElementPlaybackStart,
   refreshRuntimeMediaCache,
   resolveRuntimeMediaClipDuration,
-  syncRuntimeMedia,
+  syncRuntimeMedia as syncRuntimeMediaWithDuration,
 } from "./media";
 import type { RuntimeMediaClip } from "./media";
 import { resolveNaturalMediaTimelineDuration } from "./playbackRate";
+import { sourceTimeAt } from "../speedRamp";
+import type { HfAutomationLane } from "../audioAutomation";
+
+// Most cases predate the terminal rule and run with no composition end to hold at.
+const syncRuntimeMedia = (
+  params: Omit<Parameters<typeof syncRuntimeMediaWithDuration>[0], "getCompositionDuration"> &
+    Partial<Pick<Parameters<typeof syncRuntimeMediaWithDuration>[0], "getCompositionDuration">>,
+) => syncRuntimeMediaWithDuration({ getCompositionDuration: () => 0, ...params });
 
 function createVideo(attrs: Record<string, string>): HTMLVideoElement {
   const el = document.createElement("video");
@@ -806,6 +814,65 @@ describe("syncRuntimeMedia", () => {
     syncRuntimeMedia({ clips: [clip], timeSeconds: 4, playing: true, playbackRate: 1 });
     expect(clip.el.currentTime).toBe(0.25);
     expect(clip.el.play).not.toHaveBeenCalled();
+  });
+
+  it("holds a video that runs to the composition end on its last frame at the terminal time", () => {
+    const clip = createMockClip({ start: 2.5, end: 5, duration: 2.5, sourceDuration: 10 });
+    const seek = {
+      clips: [clip],
+      playing: false,
+      playbackRate: 1,
+      getCompositionDuration: () => 5,
+    };
+    syncRuntimeMedia({ ...seek, timeSeconds: 5 });
+    expect(clip.el.currentTime).toBe(2.5);
+    expect(clip.el.play).not.toHaveBeenCalled();
+  });
+
+  it("holds a speed-ramped video that runs to the composition end at the source time of its own end", () => {
+    const lane: HfAutomationLane = {
+      target: "rate",
+      points: [
+        { t: 0, v: 1 },
+        { t: 5, v: 2 },
+      ],
+    };
+    const clip = createMockClip({ start: 0, end: 5, duration: 5, sourceDuration: 100, rate: lane });
+    syncRuntimeMedia({
+      clips: [clip],
+      timeSeconds: 6,
+      playing: false,
+      playbackRate: 1,
+      getCompositionDuration: () => 5,
+    });
+    expect(clip.el.currentTime).toBeCloseTo(sourceTimeAt(lane, 5), 5);
+    expect(clip.el.currentTime).toBeLessThan(sourceTimeAt(lane, 6));
+    expect(clip.el.play).not.toHaveBeenCalled();
+  });
+
+  it("clamps a terminal video hold to a shorter source tail", () => {
+    const clip = createMockClip({ start: 0, end: 5, duration: 5, sourceDuration: 0.25 });
+    syncRuntimeMedia({
+      clips: [clip],
+      timeSeconds: 5,
+      playing: true,
+      playbackRate: 1,
+      getCompositionDuration: () => 5,
+    });
+    expect(clip.el.currentTime).toBe(0.25);
+    expect(clip.el.play).not.toHaveBeenCalled();
+  });
+
+  it("does not hold a video that ended before the composition did", () => {
+    const clip = createMockClip({ start: 0, end: 2.5, duration: 2.5, sourceDuration: 10 });
+    syncRuntimeMedia({
+      clips: [clip],
+      timeSeconds: 5,
+      playing: false,
+      playbackRate: 1,
+      getCompositionDuration: () => 5,
+    });
+    expect(clip.el.currentTime).toBe(0);
   });
 
   it("seeks an ended video backward into its playable source", () => {

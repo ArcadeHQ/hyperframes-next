@@ -949,6 +949,95 @@ describe("initSandboxRuntimeModular", () => {
     expect(clip.style.visibility).toBe("hidden");
   });
 
+  describe("at the composition's terminal time", () => {
+    const buildRoot = () => {
+      const root = document.createElement("div");
+      root.setAttribute("data-composition-id", "main");
+      root.setAttribute("data-root", "true");
+      root.setAttribute("data-start", "0");
+      root.setAttribute("data-width", "1920");
+      root.setAttribute("data-height", "1080");
+      document.body.appendChild(root);
+      return root;
+    };
+    const addClip = (root: HTMLElement, start: number, duration: number) => {
+      const clip = document.createElement("div");
+      clip.setAttribute("data-start", String(start));
+      clip.setAttribute("data-duration", String(duration));
+      root.appendChild(clip);
+      return clip;
+    };
+
+    it("keeps a clip that runs to the composition duration visible at and past the duration", () => {
+      const root = buildRoot();
+      const lastClip = addClip(root, 2.5, 2.5);
+      window.__timelines = { main: createMockTimeline(5) };
+      initSandboxRuntimeModular();
+
+      window.__player?.renderSeek(5 - 1e-9);
+      expect(lastClip.style.visibility).toBe("visible");
+      window.__player?.renderSeek(5);
+      expect(lastClip.style.visibility).toBe("visible");
+      window.__player?.renderSeek(5.5);
+      expect(lastClip.style.visibility).toBe("visible");
+    });
+
+    it("seeks a terminal video to its last authored frame and keeps it paused on a direct seek", () => {
+      const root = buildRoot();
+      const video = document.createElement("video");
+      video.setAttribute("data-start", "2.5");
+      video.setAttribute("data-duration", "2.5");
+      root.appendChild(video);
+      Object.defineProperty(video, "duration", { value: 10, configurable: true });
+      Object.defineProperty(video, "currentTime", { value: 0, writable: true, configurable: true });
+      video.play = vi.fn(() => Promise.resolve());
+      window.__timelines = { main: createMockTimeline(5) };
+      initSandboxRuntimeModular();
+
+      window.__player?.renderSeek(5);
+
+      expect(video.style.visibility).toBe("visible");
+      expect(video.currentTime).toBe(2.5);
+      expect(video.paused).toBe(true);
+      expect(video.play).not.toHaveBeenCalled();
+    });
+
+    it("keeps a nested clip visible when its summed end falls one ulp short of the timeline duration", () => {
+      const root = buildRoot();
+      // GSAP reports 0.8 for a 0.7s tween followed by a 0.1s tween; the authored end sums to 0.7999999999999999.
+      const nested = addClip(root, 0.7, 0.1);
+      window.__timelines = { main: createMockTimeline(0.8) };
+      initSandboxRuntimeModular();
+
+      window.__player?.renderSeek(0.8);
+      expect(nested.style.visibility).toBe("visible");
+    });
+
+    it("still hides a clip that ended before the composition duration", () => {
+      const root = buildRoot();
+      const earlyClip = addClip(root, 0, 2.5);
+      addClip(root, 2.5, 2.5);
+      window.__timelines = { main: createMockTimeline(5) };
+      initSandboxRuntimeModular();
+
+      window.__player?.renderSeek(5);
+      expect(earlyClip.style.visibility).toBe("hidden");
+    });
+
+    it("never shows two back-to-back clips at their shared boundary", () => {
+      const root = buildRoot();
+      const first = addClip(root, 0, 2.5);
+      const second = addClip(root, 2.5, 2.5);
+      window.__timelines = { main: createMockTimeline(5) };
+      initSandboxRuntimeModular();
+
+      window.__player?.renderSeek(2.5);
+      expect([first.style.visibility, second.style.visibility]).toEqual(["hidden", "visible"]);
+      window.__player?.renderSeek(5);
+      expect([first.style.visibility, second.style.visibility]).toEqual(["hidden", "visible"]);
+    });
+  });
+
   it("keeps external composition hosts visible through their authored duration", async () => {
     const root = document.createElement("div");
     root.setAttribute("data-composition-id", "main");
