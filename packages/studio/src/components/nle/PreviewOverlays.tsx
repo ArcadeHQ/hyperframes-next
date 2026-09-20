@@ -5,6 +5,7 @@ import { DomEditOverlay } from "../editor/DomEditOverlay";
 import { TopologyLens } from "../editor/TopologyLens";
 import { MotionPathOverlay } from "../editor/MotionPathOverlay";
 import { SnapToolbar } from "../editor/SnapToolbar";
+import { usePreviewReadOnly } from "../editor/previewReadOnlyContext";
 import { useCompositionDimensions } from "../../hooks/useCompositionDimensions";
 import { useStudioPlaybackContext, useStudioShellContext } from "../../contexts/StudioContext";
 import {
@@ -140,6 +141,8 @@ export function PreviewOverlays({
   const { activeCompPath, previewIframeRef } = useStudioShellContext();
   const { captionEditMode, compositionLoading, isPlaying } = useStudioPlaybackContext();
   const compositionDimensions = useCompositionDimensions(previewIframeRef);
+  const readOnly = usePreviewReadOnly();
+  const previewCaptionEditMode = captionEditMode && !readOnly;
 
   // Caption edit mode is entered automatically when captions are detected;
   // these give the author an explicit way OUT (and back in). Without them the
@@ -216,7 +219,7 @@ export function PreviewOverlays({
     );
   }
 
-  if (captionEditMode) {
+  if (previewCaptionEditMode) {
     return (
       <>
         <TopologyLens iframeRef={previewIframeRef} activeCompositionPath={activeCompPath} />
@@ -267,7 +270,9 @@ export function PreviewOverlays({
         iframeRef={previewIframeRef}
         activeCompositionPath={activeCompPath}
         hoverSelection={
-          !captionEditMode && !compositionLoading && !isPlaying ? domEditHoverSelection : null
+          !previewCaptionEditMode && !compositionLoading && !isPlaying
+            ? domEditHoverSelection
+            : null
         }
         selection={shouldShowSelectedDomBounds ? domEditSelection : null}
         groupSelections={shouldShowSelectedDomBounds ? domEditGroupSelections : []}
@@ -327,12 +332,14 @@ export function PreviewOverlays({
         onMarqueeSelect={applyMarqueeSelection}
       />
       <SnapToolbar onSnapChange={setSnapPrefs} />
-      <MotionPathOverlay
-        iframeRef={previewIframeRef}
-        selection={shouldShowMotionPath ? domEditSelection : null}
-        compositionSize={compositionDimensions}
-        isPlaying={isPlaying}
-      />
+      {!readOnly && (
+        <MotionPathOverlay
+          iframeRef={previewIframeRef}
+          selection={shouldShowMotionPath ? domEditSelection : null}
+          compositionSize={compositionDimensions}
+          isPlaying={isPlaying}
+        />
+      )}
       {gestureOverlay}
       {captionModelPresent && captionDismissed && (
         <button
