@@ -2796,6 +2796,7 @@ describe("HyperframesPlayer asset-ready gate", () => {
     pause(): void;
     seek(timeInSeconds: number): void;
     shaderLoader: { showAssetsLoading(): void };
+    _settleAssetsReady(generation: number): void;
   };
 
   beforeEach(async () => {
@@ -2972,6 +2973,25 @@ describe("HyperframesPlayer asset-ready gate", () => {
     expect(painted).toHaveBeenCalledTimes(1);
 
     player.remove();
+  });
+
+  it("dispatches painted once for the current generation when settles share a loader fade", async () => {
+    vi.useFakeTimers();
+    try {
+      const player = await createConnectedPlayer();
+      const painted = vi.fn();
+      player.addEventListener("painted", painted);
+      player.shaderLoader.showAssetsLoading();
+
+      player._waitForAssetsReady(null);
+      player._waitForAssetsReady(null);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(painted).toHaveBeenCalledTimes(1);
+      player.remove();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("defers play() until a pending video settles, then plays and clears the overlay attribute", async () => {

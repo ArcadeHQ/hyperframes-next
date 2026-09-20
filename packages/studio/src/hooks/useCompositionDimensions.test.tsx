@@ -71,7 +71,6 @@ it("re-reads the size from the promoted iframe's document", () => {
     act(() => root.render(<Harness />));
     expect(host.textContent).toBe('{"width":1920,"height":1080}');
     act(() => {
-      ref.current = b;
       usePreviewIframeStore.getState().setIframe(b);
     });
     expect(host.textContent).toBe('{"width":1080,"height":1920}');

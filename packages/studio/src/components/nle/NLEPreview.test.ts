@@ -261,6 +261,7 @@ describe("NLEPreview", () => {
     expect(players[0].style.clipPath).toBe("");
     expect(players[1].style.clipPath).toBe("inset(100%)");
     expect(players[1].style.visibility).toBe("hidden");
+    expect(players[1].style.pointerEvents).toBe("none");
     view.cleanup();
   });
 

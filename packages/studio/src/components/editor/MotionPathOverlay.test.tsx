@@ -52,7 +52,6 @@ it("re-evaluates set-destination availability when a reload swaps the live ifram
     expect(usePlayerStore.getState().motionPathCreateAvailable).toBe(false);
 
     act(() => {
-      ref.current = after;
       usePreviewIframeStore.getState().setIframe(after);
     });
     expect(usePlayerStore.getState().motionPathCreateAvailable).toBe(true);

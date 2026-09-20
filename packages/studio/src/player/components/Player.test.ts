@@ -85,6 +85,8 @@ async function mountPlayer(props: Partial<PlayerProps> = {}) {
 
 const twoFrames = () => act(async () => void (await new Promise((r) => setTimeout(r, 80))));
 
+const flushEffects = () => act(async () => await Promise.resolve());
+
 function createAudioIframe() {
   const iframe = document.createElement("iframe");
   document.body.appendChild(iframe);
@@ -215,6 +217,38 @@ describe("ready to show", () => {
 
   const painted = (player: TestHyperframesPlayer) =>
     act(() => void player.dispatchEvent(new Event("painted")));
+
+  it("waits two animation frames before notifying that the preview can show", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      });
+    try {
+      const onReadyToShowChange = vi.fn();
+      const { player } = await mountPlayer({ onReadyToShowChange });
+      const el = player as TestHyperframesPlayer;
+
+      loadAndReady(el);
+      painted(el);
+      await flushEffects();
+      expect(onReadyToShowChange).not.toHaveBeenCalledWith(true);
+      expect(callbacks).toHaveLength(1);
+
+      act(() => callbacks.shift()?.(0));
+      await flushEffects();
+      expect(onReadyToShowChange).not.toHaveBeenCalledWith(true);
+      expect(callbacks).toHaveLength(1);
+
+      act(() => callbacks.shift()?.(16));
+      await flushEffects();
+      expect(onReadyToShowChange).toHaveBeenLastCalledWith(true);
+    } finally {
+      requestAnimationFrame.mockRestore();
+    }
+  });
 
   it("promotes only once the player reports painted, not at ready or assetsready", async () => {
     const onReadyToShowChange = vi.fn();
