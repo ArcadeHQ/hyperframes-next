@@ -26,6 +26,9 @@ interface PlayerProps {
   projectId?: string;
   directUrl?: string;
   onLoad: () => void;
+  /** Fires once the loaded document is painted and every loader (shader, assets) has cleared. */
+  onReadyToShowChange?: (ready: boolean) => void;
+  onPreviewError?: (message: string) => void;
   onCompositionLoadingChange?: (loading: boolean) => void;
   portrait?: boolean;
   style?: React.CSSProperties;
@@ -134,6 +137,8 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
       projectId,
       directUrl,
       onLoad,
+      onReadyToShowChange,
+      onPreviewError,
       onCompositionLoadingChange,
       portrait,
       style,
@@ -147,12 +152,22 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
     const assetFadeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const retryPreviewRef = useRef<(() => void) | null>(null);
     const retryCountRef = useRef(0);
+    // Read at call time: this element outlives its first props (a shadow preview is
+    // promoted in place), so mount-time closures would go stale.
+    const onLoadRef = useRef(onLoad);
+    onLoadRef.current = onLoad;
+    const onReadyToShowChangeRef = useRef(onReadyToShowChange);
+    onReadyToShowChangeRef.current = onReadyToShowChange;
+    const onPreviewErrorRef = useRef(onPreviewError);
+    onPreviewErrorRef.current = onPreviewError;
+    const [loaded, setLoaded] = useState(false);
     const [assetsLoading, setAssetsLoading] = useState(false);
     const [assetOverlayVisible, setAssetOverlayVisible] = useState(false);
     const [assetOverlayFading, setAssetOverlayFading] = useState(false);
     const [assetWaitLong, setAssetWaitLong] = useState(false);
     const [shaderTransitionLoading, setShaderTransitionLoading] = useState(false);
     const [compositionLoading, setCompositionLoading] = useState(true);
+    const [painted, setPainted] = useState(false);
     const [compositionOverlayDeferred, setCompositionOverlayDeferred] = useState(true);
     const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -207,15 +222,20 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
           setPreviewError(null);
           setCompositionLoading(false);
         };
+        const handlePainted = () => setPainted(true);
         const handleError = (event: Event) => {
-          setPreviewError(readPreviewErrorMessage(event));
+          const message = readPreviewErrorMessage(event);
+          onPreviewErrorRef.current?.(message);
+          setPreviewError(message);
           setCompositionLoading(false);
         };
         const handleLoad = () => {
           loadCountRef.current++;
+          setLoaded(true);
           setPreviewError(null);
           setShaderTransitionLoading(false);
           setCompositionLoading(true);
+          setPainted(false);
           // Reveal animation on reload (hot-reload, composition switch)
           if (loadCountRef.current > 1) {
             container.classList.remove("preview-revealing");
@@ -224,7 +244,7 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
             const onEnd = () => container.classList.remove("preview-revealing");
             container.addEventListener("animationend", onEnd, { once: true });
           }
-          onLoad();
+          onLoadRef.current();
 
           // Show a loading overlay until every `<video>`/`<audio>` and Lottie
           // asset is ready. Without this users can click play before audio has
@@ -274,6 +294,7 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
         player.addEventListener("click", preventToggle, { capture: true });
         player.addEventListener("shadertransitionstate", handleShaderTransitionState);
         player.addEventListener("ready", handleReady);
+        player.addEventListener("painted", handlePainted);
         player.addEventListener("error", handleError);
 
         // Bridge the inner iframe to the forwarded ref for useTimelinePlayer.
@@ -313,6 +334,7 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
           player.removeEventListener("click", preventToggle, { capture: true });
           player.removeEventListener("shadertransitionstate", handleShaderTransitionState);
           player.removeEventListener("ready", handleReady);
+          player.removeEventListener("painted", handlePainted);
           player.removeEventListener("error", handleError);
           if (assetPollRef.current) clearInterval(assetPollRef.current);
           assetPollRef.current = null;
@@ -393,6 +415,29 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
       }
       setAssetsLoading(false);
     };
+
+    const readyToShow =
+      loaded &&
+      painted &&
+      !compositionLoading &&
+      !shaderTransitionLoading &&
+      !assetsLoading &&
+      !previewError;
+    // `painted` means the player's own loader has finished fading; two frames of grace on top.
+    useEffect(() => {
+      if (!readyToShow) {
+        onReadyToShowChangeRef.current?.(false);
+        return;
+      }
+      let second = 0;
+      const first = requestAnimationFrame(() => {
+        second = requestAnimationFrame(() => onReadyToShowChangeRef.current?.(true));
+      });
+      return () => {
+        cancelAnimationFrame(first);
+        cancelAnimationFrame(second);
+      };
+    }, [readyToShow]);
 
     const showCompositionOverlay =
       !suppressLoadingOverlay &&

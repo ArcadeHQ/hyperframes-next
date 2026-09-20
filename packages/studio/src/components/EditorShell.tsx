@@ -172,6 +172,7 @@ export function EditorShell({
             activeCompositionPath={activeCompPath}
             onIframeRef={handlePreviewIframeRef}
             onCompIdToSrcChange={setCompIdToSrc}
+            onPreviewReloadFailed={(message) => showToast(message, "error")}
             onCompositionLoadingChange={setCompositionLoading}
             onCompositionChange={(compPath) => {
               // Sync activeCompPath when the user drills down via the timeline or
@@ -264,7 +265,7 @@ function EditorShellBody({
   onDuplicateClip,
   canPasteClip,
 }: EditorShellBodyProps) {
-  const { compositionStack, updateCompositionStack } = useNLEContext();
+  const { compositionStack, updateCompositionStack, containerRef } = useNLEContext();
 
   // The caption track's blocks are seek targets; CaptionTimeline took an onSeek
   // prop that nothing ever passed, so clicking a block did nothing.
@@ -284,6 +285,7 @@ function EditorShellBody({
 
   return (
     <div
+      ref={containerRef}
       // Shell canvas is a step LIGHTER than the near-black panel cards so the
       // gaps between panels read as visible seams (CapCut-style).
       className="flex flex-col flex-1 min-h-0 bg-panel-surface"
