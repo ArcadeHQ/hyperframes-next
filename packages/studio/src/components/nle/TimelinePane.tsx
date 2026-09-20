@@ -1,6 +1,6 @@
 import { useCallback, type ReactNode } from "react";
 import { Timeline } from "../../player";
-import type { TimelineElement } from "../../player";
+import type { TimelineElement, TimelineTimeRange } from "../../player";
 import type { BlockedTimelineEditIntent } from "../../player/components/timelineEditing";
 import { useTimelineEditContext } from "../../contexts/TimelineEditContext";
 import { trackStudioExpandedClipEdit } from "../../telemetry/events";
@@ -77,6 +77,9 @@ export interface TimelinePaneProps {
   timelineToolbar?: ReactNode;
   /** Slot rendered below the timeline tracks */
   timelineFooter?: ReactNode;
+  /** Slot for a host's own overlay spanning the whole timeline area (e.g. a draft/ghost
+   *  clip), positioned absolutely the same way PreviewPane's previewOverlay is. */
+  timelineOverlay?: ReactNode;
   /** Custom clip content renderer for timeline (thumbnails, waveforms, etc.) */
   renderClipContent?: (
     element: TimelineElement,
@@ -101,6 +104,7 @@ export interface TimelinePaneProps {
   ) => Promise<void> | void;
   onBlockedEditAttempt?: (element: TimelineElement, intent: BlockedTimelineEditIntent) => void;
   onSelectTimelineElement?: (element: TimelineElement | null) => void;
+  onRangeSelect?: (range: TimelineTimeRange | null) => void;
   /** Copy/paste/duplicate act on the store's own selection, not a passed
    *  element, so unlike onDeleteElement they need no composition-basis wrapper. */
   onCopyClip?: () => boolean;
@@ -113,6 +117,7 @@ export interface TimelinePaneProps {
 export function TimelinePane({
   timelineToolbar,
   timelineFooter,
+  timelineOverlay,
   renderClipContent,
   onFileDrop,
   onDeleteElement,
@@ -121,6 +126,7 @@ export function TimelinePane({
   onCompositionDrop,
   onBlockedEditAttempt,
   onSelectTimelineElement,
+  onRangeSelect,
   onCopyClip,
   onPasteClip,
   onDuplicateClip,
@@ -278,6 +284,7 @@ export function TimelinePane({
           onBlockedEditAttempt={onBlockedEditAttempt}
           onSplitElement={handleSplitElement}
           onSelectElement={onSelectTimelineElement}
+          onRangeSelect={onRangeSelect}
           onCopyClip={onCopyClip}
           onPasteClip={onPasteClip}
           onDuplicateClip={onDuplicateClip}
@@ -285,6 +292,9 @@ export function TimelinePane({
         />
       </div>
       {timelineFooter && <div className="shrink-0">{timelineFooter}</div>}
+      {timelineOverlay && (
+        <div className="pointer-events-none absolute inset-0 z-20">{timelineOverlay}</div>
+      )}
       {timelineDisabled && (
         <div
           className="absolute inset-0 z-30 cursor-not-allowed bg-black/18 flex items-center justify-center"
