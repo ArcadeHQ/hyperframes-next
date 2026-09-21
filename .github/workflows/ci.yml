@@ -57,6 +57,7 @@ jobs:
             catalog_index:
               - "registry/registry.json"
               - "registry/catalog-artifact/**"
+              - "skills/media-use/audio/assets/sfx/**"
               - "scripts/catalog/check-artifact-coverage.ts"
             docs_catalog:
               - "docs/**"
@@ -375,8 +376,8 @@ jobs:
   # `node:` built-in imports. They aren't part of any workspace package, and
   # the main `Test` job's `code` path filter excludes `skills/**`, so without
   # this dedicated job they'd never run in CI. Examples:
-  #   * skills/media-use/scripts/resolve.test.mjs
-  #   * skills/media-use/scripts/lib/manifest.test.mjs
+  #   * packages/cli/src/media-use/resolve.test.mjs
+  #   * packages/cli/src/media-use/lib/manifest.test.mjs
   # Several of these are regression guards (e.g. shell-injection cases), so
   # the whole point is that they fire on PRs that touch skills/.
   test-skills:
@@ -396,11 +397,12 @@ jobs:
         # would defeat the whole point of this job).
         run: |
           set -euo pipefail
-          mapfile -t SKILLS_TESTS < <(find skills -type f -name "*.test.mjs" | sort)
+          mapfile -t SKILLS_TESTS < <(find skills packages/cli/src/media-use -type f -name "*.test.mjs" | sort)
           if [ "${#SKILLS_TESTS[@]}" -eq 0 ]; then
             echo "::error::No skills/**/*.test.mjs files found. Did the layout change?"
             exit 1
           fi
+          SKILLS_TESTS+=(scripts/check-media-use-copy-parity.test.mjs)
           printf 'Running %d skills test file(s):\n' "${#SKILLS_TESTS[@]}"
           printf '  * %s\n' "${SKILLS_TESTS[@]}"
           node --test "${SKILLS_TESTS[@]}"
