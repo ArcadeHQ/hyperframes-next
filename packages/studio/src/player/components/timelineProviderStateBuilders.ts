@@ -5,6 +5,26 @@ import type {
 } from "./TimelineProvider";
 import type { ResizingClipState } from "./useTimelineClipDrag";
 import type { TimelineLaneBaseProps } from "./timelineLaneProps";
+import type { DraggedClipState } from "./timelineClipDragTypes";
+import type { MultiDragPreviewInput } from "./timelineMultiDragPreview";
+import { getTimelineElementIdentity } from "../lib/timelineElementHelpers";
+
+export function resolveMultiDragPreview(
+  draggedClip: DraggedClipState | null,
+  selectedKeys: ReadonlySet<string>,
+): MultiDragPreviewInput | null {
+  // The dragged clip is a free ghost; selected companions follow the same
+  // clamped delta so the formation stays rigid at the lane boundary.
+  if (!draggedClip?.started) return null;
+  const draggedKey = getTimelineElementIdentity(draggedClip.element);
+  return {
+    dragStarted: true,
+    draggedKey,
+    draggedOriginStart: draggedClip.element.start,
+    draggedPreviewStart: draggedClip.previewStart,
+    selectedKeys,
+  };
+}
 
 export function resolveResizingElementIds(
   resizingClip: ResizingClipState | null,
