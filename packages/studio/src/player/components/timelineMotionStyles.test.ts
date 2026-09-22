@@ -108,6 +108,11 @@ describe("timeline motion styles", () => {
     const audioClipHoverRule = expectRule(studioCss, ".timeline-clip.is-audio.is-hovered");
     const audioClipDraggingRule = expectRule(studioCss, ".timeline-clip.is-audio.is-dragging");
     const activeTimelineClipRule = expectRule(studioCss, ".timeline-clip[data-active]");
+    const selectedTimelineClipRule = expectRule(studioCss, ".timeline-clip.is-selected");
+    const activeSelectedTimelineClipRule = expectRule(
+      studioCss,
+      ".timeline-clip[data-active].is-selected",
+    );
     const bloomOverlayRule = expectRule(studioCss, ".timeline-clip::before");
     const activeBloomOverlayRule = expectRule(studioCss, ".timeline-clip[data-active]::before");
 
@@ -134,7 +139,15 @@ describe("timeline motion styles", () => {
     expect(audioClipDraggingRule).toContain(
       "background-color: var(--timeline-clip-audio-bg-dragging)",
     );
-    expect(studioCss).toContain("box-shadow: 0 0 0 1.5px var(--timeline-clip-selection)");
+    expect(themeCss).toContain("--timeline-clip-selection: rgba(255, 255, 255, 0.85)");
+    expect(selectedTimelineClipRule).toContain(
+      "outline: 1.5px solid var(--timeline-clip-selection)",
+    );
+    expect(selectedTimelineClipRule).toContain("outline-offset: -1.5px");
+    expect(activeSelectedTimelineClipRule).toContain(
+      "outline: 1.5px solid var(--timeline-clip-selection)",
+    );
+    expect(activeSelectedTimelineClipRule).toContain("outline-offset: -1.5px");
     expect(activeTimelineClipRule).not.toContain("background: linear-gradient");
     expect(activeTimelineClipRule).toContain("border-color: var(--clip-border-active)");
     expect(activeTimelineClipRule).not.toContain("box-shadow");
