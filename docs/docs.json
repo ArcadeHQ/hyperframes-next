@@ -510,12 +510,12 @@
               },
               {
                 "group": "Data & charts",
-                "tag": "18",
+                "tag": "17",
                 "expanded": false,
                 "pages": [
                   {
                     "group": "Data",
-                    "tag": "18",
+                    "tag": "17",
                     "expanded": false,
                     "pages": [
                       "catalog/components/animated-bar-chart",
@@ -534,7 +534,7 @@
                       "catalog/blocks/us-map-bubble",
                       "catalog/blocks/us-map-flow",
                       "catalog/blocks/us-map-hex",
-                      "catalog/blocks/week-in-merges",
+                      "catalog/blocks/week-in-merges", 
                       "catalog/blocks/world-map"
                     ]
                   }
