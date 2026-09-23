@@ -8,11 +8,6 @@
       "keepLocal": true
     },
     {
-      "branch": "patch/host-duration-bound",
-      "issue": "https://github.com/heygen-com/hyperframes/issues/3964",
-      "pr": "https://github.com/heygen-com/hyperframes/pull/3965"
-    },
-    {
       "branch": "patch/playback-start-nested",
       "issue": "https://github.com/heygen-com/hyperframes/issues/3245",
       "upstreamPr": "https://github.com/heygen-com/hyperframes/pull/3246"
