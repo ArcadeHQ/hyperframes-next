@@ -120,6 +120,21 @@ function hasRemainingTimelineTime(owner: Record<string, unknown>): boolean {
   return time < duration;
 }
 
+function hasPausedAncestor(owner: Record<string, unknown>): boolean {
+  let ancestor = owner.parent;
+  for (let depth = 0; depth < 32 && ancestor && typeof ancestor === "object"; depth++) {
+    const node = ancestor as Record<string, unknown>;
+    const paused = node.paused;
+    try {
+      if (typeof paused === "function" && paused.call(node)) return true;
+    } catch {
+      return false;
+    }
+    ancestor = node.parent;
+  }
+  return false;
+}
+
 function isTimelinePlaying(owner: Record<string, unknown> | undefined): boolean {
   if (!owner) return false;
   const isPlaying = owner.isPlaying;
@@ -148,6 +163,8 @@ function isTimelinePlaying(owner: Record<string, unknown> | undefined): boolean 
       }
     }
 
+    // A GSAP child of a paused timeline reads unpaused with time left; only its ancestors know.
+    if (hasPausedAncestor(owner)) return false;
     return hasRemainingTimelineTime(owner);
   }
 
