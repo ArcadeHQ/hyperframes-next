@@ -15,7 +15,13 @@
  */
 
 import { parseHTML } from "linkedom";
-import { MEDIA_RENDER_ID_ATTR, resolveAuthoredTimingWindow } from "@hyperframes/core";
+import {
+  MEDIA_RENDER_ID_ATTR,
+  mapClipThroughHostWindow,
+  resolveAuthoredTimingWindow,
+  resolveNestedHostWindow,
+  type NestedHostWindow,
+} from "@hyperframes/core";
 import {
   MEDIA_START_BASIS_ATTR,
   readMediaStartBasis,
@@ -62,6 +68,8 @@ interface HostWindow {
   limit: number;
   /** Whether authored media time is composition-local or legacy root-global. */
   basis: MediaStartBasis;
+  /** Set when a host carries a slot in-point; clips then map like the runtime's. */
+  inPoint?: NestedHostWindow;
 }
 
 const ROOT_WINDOW: HostWindow = { offset: 0, limit: Infinity, basis: "local" };
@@ -106,7 +114,14 @@ function resolveHostWindow(
     offset,
     limit,
     basis,
+    inPoint: resolveInPointWindow(element),
   };
+}
+
+/** The runtime's slot window, only when a host carries an in-point to remap through it. */
+function resolveInPointWindow(element: Element): NestedHostWindow | undefined {
+  const nested = resolveNestedHostWindow(element);
+  return nested?.hasInPoint ? nested : undefined;
 }
 
 /**
@@ -139,7 +154,9 @@ function toAbsoluteWindow(
   start: number,
   end: number,
   window: HostWindow,
-): { start: number; end: number } | null {
+  mediaStart?: number,
+): { start: number; end: number; mediaStart?: number } | null {
+  if (window.inPoint) return mapClipThroughHostWindow(start, end, mediaStart, window.inPoint, true);
   const absoluteStart = resolveAbsoluteMediaStartSeconds({
     authoredStart: start,
     hostStart: window.offset,
@@ -174,7 +191,12 @@ export function collectRenderMedia(html: string): RenderMedia {
 
   const videos: VideoElement[] = [];
   for (const video of parseVideoElements(html)) {
-    const absolute = toAbsoluteWindow(video.start, video.end, windowFor(video.id));
+    const absolute = toAbsoluteWindow(
+      video.start,
+      video.end,
+      windowFor(video.id),
+      video.mediaStart,
+    );
     if (absolute) videos.push({ ...video, ...absolute });
   }
 
@@ -192,11 +214,16 @@ export function collectRenderMedia(html: string): RenderMedia {
     // The mixer reads end === 0 as "run to the natural media length", so an
     // unbounded track must stay unbounded rather than collapse onto its start.
     const authoredEnd = audio.end > 0 ? audio.end : Infinity;
-    const absolute = toAbsoluteWindow(audio.start, authoredEnd, windowFor(elementId));
+    const absolute = toAbsoluteWindow(
+      audio.start,
+      authoredEnd,
+      windowFor(elementId),
+      audio.mediaStart,
+    );
     if (!absolute) continue;
     audios.push({
       ...audio,
-      start: absolute.start,
+      ...absolute,
       end: Number.isFinite(absolute.end) ? absolute.end : 0,
     });
   }
