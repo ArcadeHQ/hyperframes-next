@@ -8,6 +8,7 @@
  * honey: rate=1 only; compose host playback-rate if nested-rate trims land.
  */
 
+import { resolveAuthoredTimingWindow } from "./authoredTiming";
 import { parseStartExpression } from "./startExpression";
 
 export type AttrNode = {
@@ -47,6 +48,17 @@ function referencedDuration(target: AttrNode, targetStart: number): number | nul
   if (endAttr == null) return null;
   const delta = endAttr - targetStart;
   return Number.isFinite(delta) && delta > 0 ? delta : null;
+}
+
+/** Same host-end rule as the render media collector: the window the runtime hides at. */
+function parseHostEnd(host: AttrNode, hostStart: number): number | null {
+  return (
+    resolveAuthoredTimingWindow({
+      start: hostStart,
+      duration: host.getAttribute("data-duration"),
+      end: host.getAttribute("data-end"),
+    })?.end ?? null
+  );
 }
 
 function findStartTarget(host: AttrNode, refId: string): AttrNode | null {
@@ -101,7 +113,7 @@ export function resolveNestedHostWindow(element: AttrNode): NestedHostWindow | n
   const visiting = new Set<AttrNode>();
   for (const host of hosts.reverse()) {
     const hostStart = parseHostStart(host, visiting);
-    const hostEnd = parseNum(host, "data-end");
+    const hostEnd = parseHostEnd(host, hostStart);
     const inPoint = parseCompositionInPoint(host);
     if (inPoint > 0) hasInPoint = true;
     windowStart = Math.max(windowStart, offset + hostStart);
