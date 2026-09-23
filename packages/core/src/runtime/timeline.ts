@@ -20,7 +20,8 @@ import {
 } from "./playbackRate";
 import { resolveCssStackingContextId } from "./stackingContext";
 import { createRuntimeStartTimeResolver } from "./startResolver";
-import { isClipVisibleAt } from "./clipWindow";
+import { isClipVisibleAt, isInClipWindow } from "./clipWindow";
+import { mapNestedMediaElement } from "./nestedHostWindow";
 import { snapTimeToFrameBoundary } from "../inline-scripts/parityContract";
 import { isSceneLikeCompositionId } from "../slideshow/index.js";
 import { COMPOSITION_CONTRACT_VERSION } from "../compositionContract.js";
@@ -44,6 +45,10 @@ export function isRuntimeElementVisibleAt(
   }
 
   const isMedia = tag === "video" || tag === "audio";
+  if (isMedia && isMediaElement(rawNode)) {
+    const nested = mapNestedMediaElement(rawNode, readElementPlaybackStart(rawNode));
+    if (nested) return isInClipWindow(options.currentTime, nested.start, nested.end);
+  }
   const start = isMedia
     ? options.resolver.resolveMediaStartForElement(rawNode)
     : options.resolver.resolveStartForElement(rawNode, 0);

@@ -39,6 +39,7 @@ import { createRuntimeState } from "./state";
 import { collectRuntimeTimelinePayload, isRuntimeElementVisibleAt } from "./timeline";
 import { resolveCompositionDuration } from "@hyperframes/parsers/composition-duration";
 import { createRuntimeStartTimeResolver } from "./startResolver";
+import { mapNestedMediaElement } from "./nestedHostWindow";
 import { createClipTree } from "./clipTree";
 import { loadExternalCompositions, loadInlineTemplateCompositions } from "./compositionLoader";
 import { applyCaptionOverrides } from "./captionOverrides";
@@ -789,11 +790,17 @@ export function initSandboxRuntimeModular(): void {
     return { compositionRoot, inheritedStart, inheritedDuration };
   };
 
-  // Single owner: `createRuntimeStartTimeResolver` (startResolver.ts). The clip
-  // manifest resolves media starts through the same method, so what the studio
-  // draws and what the transport plays cannot drift apart.
-  const resolveAbsoluteMediaStartSeconds = (element: Element): number =>
-    timingResolverFor(true).resolveMediaStartForElement(element);
+  const mapNestedMedia = (element: HTMLMediaElement) =>
+    mapNestedMediaElement(element, readElementPlaybackStart(element));
+
+  // Single owner: startResolver, unless a slot in-point remaps the window.
+  const resolveAbsoluteMediaStartSeconds = (element: Element): number => {
+    if (isMediaElement(element)) {
+      const nested = mapNestedMedia(element);
+      if (nested) return nested.start;
+    }
+    return timingResolverFor(true).resolveMediaStartForElement(element);
+  };
 
   window.__hfResolveMediaStartSeconds = resolveAbsoluteMediaStartSeconds;
   runtimeCleanupCallbacks.push(() => {
@@ -2591,7 +2598,11 @@ export function initSandboxRuntimeModular(): void {
       resolveStartSeconds: (element) => {
         return resolveAbsoluteMediaStartSeconds(element);
       },
+      resolveMediaStartSeconds: (element) =>
+        mapNestedMedia(element)?.mediaStart ?? readElementPlaybackStart(element),
       resolveDurationSeconds: (element) => {
+        const nested = mapNestedMedia(element);
+        if (nested && !(nested.end > nested.start)) return 0;
         const context = resolveMediaCompositionContext(element);
         const start = resolveAbsoluteMediaStartSeconds(element);
         const hostRemaining =
@@ -3888,10 +3899,15 @@ export function initSandboxRuntimeModular(): void {
           for (const rawEl of audioEls) {
             if (!isMediaElement(rawEl) || !rawEl.isConnected) continue;
             if (isSilencedByHidden(rawEl)) continue;
+            const nested = mapNestedMedia(rawEl);
             const start = resolveAbsoluteMediaStartSeconds(rawEl);
             const durAttr = parseStrictFiniteTimingNumber(rawEl.dataset.duration);
-            const end = durAttr != null && durAttr > 0 ? start + durAttr : Infinity;
-            const mediaStart = readElementPlaybackStart(rawEl);
+            const end = nested
+              ? nested.end
+              : durAttr != null && durAttr > 0
+                ? start + durAttr
+                : Infinity;
+            const mediaStart = nested?.mediaStart ?? readElementPlaybackStart(rawEl);
             if (Number.isFinite(start) && isInClipWindow(state.currentTime, start, end)) {
               if (!rawEl.paused) {
                 clock.attachAudioSource({
@@ -3996,12 +4012,13 @@ export function initSandboxRuntimeModular(): void {
       if (!isMediaElement(el)) continue;
       if (!el.isConnected) continue;
       if (!el.hasAttribute("data-start")) continue;
+      const nested = mapNestedMedia(el);
       const start = resolveAbsoluteMediaStartSeconds(el);
       if (!Number.isFinite(start)) continue;
       const durAttr = parseStrictFiniteTimingNumber(el.dataset.duration);
-      const end = durAttr != null && durAttr > 0 ? start + durAttr : Infinity;
+      const end = nested ? nested.end : durAttr != null && durAttr > 0 ? start + durAttr : Infinity;
       if (!isInClipWindow(timeSeconds, start, end)) continue;
-      const mediaStart = readElementPlaybackStart(el);
+      const mediaStart = nested?.mediaStart ?? readElementPlaybackStart(el);
       const relTime = timeSeconds - start + mediaStart;
       if (relTime >= 0) {
         try {
@@ -4026,14 +4043,20 @@ export function initSandboxRuntimeModular(): void {
     for (const rawEl of audioEls) {
       if (!isMediaElement(rawEl) || !rawEl.isConnected) continue;
       if (isSilencedByHidden(rawEl)) continue;
+      const nested = mapNestedMedia(rawEl);
       const compStart = resolveAbsoluteMediaStartSeconds(rawEl);
       if (!Number.isFinite(compStart)) continue;
-      const mediaStart = readElementPlaybackStart(rawEl);
+      if (nested && !(nested.end > nested.start)) continue;
+      const mediaStart = nested?.mediaStart ?? readElementPlaybackStart(rawEl);
       const volumeAttr = Number.parseFloat(rawEl.dataset.volume ?? "");
       const vol = Number.isFinite(volumeAttr) ? volumeAttr : 1;
       const durationAttr = parseStrictFiniteTimingNumber(rawEl.dataset.duration);
       let clipDuration =
-        durationAttr != null && durationAttr > 0 ? durationAttr : Number.POSITIVE_INFINITY;
+        nested && Number.isFinite(nested.end)
+          ? Math.max(0, nested.end - nested.start)
+          : durationAttr != null && durationAttr > 0
+            ? durationAttr
+            : Number.POSITIVE_INFINITY;
       const compositionRoot = rawEl.closest("[data-composition-id]");
       if (compositionRoot) {
         const inheritedStart = resolveStartForElement(compositionRoot, 0);
