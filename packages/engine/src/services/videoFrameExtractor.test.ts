@@ -24,6 +24,7 @@ import {
   FrameLookupTable,
   rebaseVideoToWindow,
   resolveFrameFormat,
+  parseAlphaPlaneProbe,
   codecMayHaveAlpha,
   decoderForCodec,
   resolveVideoExtractionWindow,
@@ -679,6 +680,32 @@ describe("resolveFrameFormat", () => {
   it("forces png when alpha is present or the codec can carry alpha", () => {
     expect(resolveFrameFormat(metadata({ hasAlpha: true }), "jpg")).toBe("png");
     expect(resolveFrameFormat(metadata({ videoCodec: "vp9" }), "jpg")).toBe("png");
+  });
+
+  it("picks jpg for an alpha-capable codec only when the probe finds no plane", () => {
+    const vp9 = metadata({ videoCodec: "vp9" });
+    expect(resolveFrameFormat(vp9, "auto", "absent")).toBe("jpg");
+    expect(resolveFrameFormat(vp9, "png", "absent")).toBe("png");
+    expect(resolveFrameFormat(vp9, "auto", "present")).toBe("png");
+    expect(resolveFrameFormat(vp9, "auto", "unknown")).toBe("png");
+    // The probe beats the tag: Chrome writes ALPHA_MODE=1 on opaque recordings.
+    const taggedVp9 = metadata({ videoCodec: "vp9", hasAlpha: true });
+    expect(resolveFrameFormat(taggedVp9, "auto", "absent")).toBe("jpg");
+    expect(resolveFrameFormat(taggedVp9, "auto", "unknown")).toBe("png");
+  });
+});
+
+describe("parseAlphaPlaneProbe", () => {
+  it("reads the decoder's native pixel format", () => {
+    expect(parseAlphaPlaneProbe("[Parsed_showinfo_0] n:   0 pts:      0 fmt:yuv420p sar:1/1")).toBe(
+      "absent",
+    );
+    expect(
+      parseAlphaPlaneProbe("[Parsed_showinfo_0] n:   0 pts:      0 fmt:yuva420p sar:1/1"),
+    ).toBe("present");
+    expect(parseAlphaPlaneProbe("fmt:yuva444p10le")).toBe("present");
+    expect(parseAlphaPlaneProbe("fmt:yuv422p10le")).toBe("absent");
+    expect(parseAlphaPlaneProbe("Error while decoding stream")).toBe("unknown");
   });
 });
 
