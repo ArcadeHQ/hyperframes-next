@@ -31,6 +31,10 @@
     {
       "branch": "patch/render-settle-pass",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/vp9-alpha-probe",
+      "keepLocal": true
     }
   ]
 }
