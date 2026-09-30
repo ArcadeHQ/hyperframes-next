@@ -131,6 +131,25 @@ describe("collectRenderMedia nested in-point", () => {
     );
   });
 
+  it("bumps a sped-up clip's mediaStart by the source time it covers before the in-point", () => {
+    const html = `<div data-composition-id="root" data-start="0">
+  <div data-composition-id="scene" data-composition-file="scene.html"
+       data-start="0" data-duration="4" data-media-start="0.5">
+    <video id="fast" data-hf-render-id="fast" src="clip.mp4" data-has-audio="true"
+           data-start="0" data-duration="6" data-media-start="1.9" data-playback-rate="1.5"></video>
+  </div>
+</div>`;
+    const media = collectRenderMedia(html);
+    expect(media.videos.find((v) => v.id === "fast")).toMatchObject({
+      start: 0,
+      mediaStart: expect.closeTo(2.65),
+    });
+    expect(media.audios.find((a) => a.id === "fast-audio")).toMatchObject({
+      start: 0,
+      mediaStart: expect.closeTo(2.65),
+    });
+  });
+
   it("resolves a host data-start id-ref against a sibling clip", () => {
     const html = `<div data-composition-id="root" data-start="0">
   <video id="intro" data-hf-render-id="intro" src="intro.mp4"
