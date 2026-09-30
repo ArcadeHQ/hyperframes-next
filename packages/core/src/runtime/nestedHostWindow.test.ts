@@ -33,16 +33,39 @@ describe("nestedHostWindow", () => {
     const video = el({ "data-start": "1", "data-duration": "4", "data-end": "5" }, host);
     const window = resolveNestedHostWindow(video);
     expect(window).toMatchObject({ offset: 3.5, windowStart: 5, limit: 7, hasInPoint: true });
-    expect(mapClipThroughHostWindow(1, 5, 0, window!, true)).toEqual({
+    expect(mapClipThroughHostWindow(1, 5, 0, window!, 1)).toEqual({
       start: 5,
       end: 7,
       mediaStart: 0.5,
     });
-    expect(mapClipThroughHostWindow(0, 1, 0, window!, true)).toBeNull();
-    expect(mapClipThroughHostWindow(2, 3, 0, window!, true)).toEqual({
+    expect(mapClipThroughHostWindow(0, 1, 0, window!, 1)).toBeNull();
+    expect(mapClipThroughHostWindow(2, 3, 0, window!, 1)).toEqual({
       start: 5.5,
       end: 6.5,
       mediaStart: 0,
+    });
+  });
+
+  it("bumps mediaStart by the source time a sped-up clip covers before the in-point", () => {
+    const host = el({
+      "data-composition-file": "scene.html",
+      "data-start": "0",
+      "data-duration": "4",
+      "data-media-start": "0.5",
+    });
+    const video = el(
+      {
+        "data-start": "0",
+        "data-duration": "6",
+        "data-media-start": "1.9",
+        "data-playback-rate": "1.5",
+      },
+      host,
+    );
+    expect(mapNestedMediaElement(video, 1.9)).toEqual({
+      start: 0,
+      end: 4,
+      mediaStart: expect.closeTo(2.65),
     });
   });
 
@@ -56,7 +79,7 @@ describe("nestedHostWindow", () => {
     const video = el({ "data-start": "1", "data-duration": "4", "data-end": "5" }, host);
     const window = resolveNestedHostWindow(video);
     expect(window).toMatchObject({ offset: 3.5, windowStart: 5, limit: 7, hasInPoint: true });
-    expect(mapClipThroughHostWindow(1, 5, 0, window!, true)).toEqual({
+    expect(mapClipThroughHostWindow(1, 5, 0, window!, 1)).toEqual({
       start: 5,
       end: 7,
       mediaStart: 0.5,

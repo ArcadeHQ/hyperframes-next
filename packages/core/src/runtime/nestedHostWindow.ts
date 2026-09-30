@@ -3,12 +3,15 @@
  * `data-playback-start` shifts descendant media the same way.
  *
  * master = hostStart − inPoint + local. Clips that end before the visible
- * slot are dropped; clips that overlap it head-trim and bump mediaStart.
+ * slot are dropped; clips that overlap it head-trim and bump mediaStart by the
+ * source time the clip's own rate covers over the trimmed span. A rate lane is
+ * not re-anchored at the new start. Host playback-rate is not composed.
  * Host `data-start` may be an id-ref (`intro`) — resolved via ownerDocument.
- * honey: rate=1 only; compose host playback-rate if nested-rate trims land.
  */
 
+import { sourceTimeAt, type RateSpec } from "../speedRamp";
 import { resolveAuthoredTimingWindow } from "./authoredTiming";
+import { readElementRateSpec } from "./playbackRate";
 import { parseStartExpression } from "./startExpression";
 
 export type AttrNode = {
@@ -128,7 +131,7 @@ export function mapClipThroughHostWindow(
   localEnd: number,
   mediaStart: number | undefined,
   window: NestedHostWindow,
-  bumpMediaStart: boolean,
+  rate: RateSpec,
 ): MappedClip | null {
   const start = localStart + window.offset;
   if (start >= window.limit) return null;
@@ -140,7 +143,7 @@ export function mapClipThroughHostWindow(
     return {
       start: window.windowStart,
       end,
-      mediaStart: bumpMediaStart && mediaStart != null ? mediaStart + bump : mediaStart,
+      mediaStart: mediaStart != null ? mediaStart + sourceTimeAt(rate, bump) : mediaStart,
     };
   }
   return { start, end, mediaStart };
@@ -158,7 +161,13 @@ export function mapNestedMediaElement(
   const endAttr = parseNum(element, "data-end");
   const localEnd =
     endAttr != null ? endAttr : duration != null && duration > 0 ? localStart + duration : Infinity;
-  const mapped = mapClipThroughHostWindow(localStart, localEnd, mediaStart, window, true);
+  const mapped = mapClipThroughHostWindow(
+    localStart,
+    localEnd,
+    mediaStart,
+    window,
+    readElementRateSpec(element),
+  );
   if (!mapped) return { start: window.windowStart, end: window.windowStart, mediaStart };
   return { start: mapped.start, end: mapped.end, mediaStart: mapped.mediaStart ?? mediaStart };
 }
