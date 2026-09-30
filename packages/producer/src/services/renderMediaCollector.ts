@@ -154,9 +154,17 @@ function toAbsoluteWindow(
   start: number,
   end: number,
   window: HostWindow,
-  mediaStart?: number,
+  media?: Pick<AudioElement, "mediaStart" | "playbackRate">,
 ): { start: number; end: number; mediaStart?: number } | null {
-  if (window.inPoint) return mapClipThroughHostWindow(start, end, mediaStart, window.inPoint, true);
+  if (window.inPoint) {
+    return mapClipThroughHostWindow(
+      start,
+      end,
+      media?.mediaStart,
+      window.inPoint,
+      media?.playbackRate ?? 1,
+    );
+  }
   const absoluteStart = resolveAbsoluteMediaStartSeconds({
     authoredStart: start,
     hostStart: window.offset,
@@ -191,12 +199,7 @@ export function collectRenderMedia(html: string): RenderMedia {
 
   const videos: VideoElement[] = [];
   for (const video of parseVideoElements(html)) {
-    const absolute = toAbsoluteWindow(
-      video.start,
-      video.end,
-      windowFor(video.id),
-      video.mediaStart,
-    );
+    const absolute = toAbsoluteWindow(video.start, video.end, windowFor(video.id), video);
     if (absolute) videos.push({ ...video, ...absolute });
   }
 
@@ -214,12 +217,7 @@ export function collectRenderMedia(html: string): RenderMedia {
     // The mixer reads end === 0 as "run to the natural media length", so an
     // unbounded track must stay unbounded rather than collapse onto its start.
     const authoredEnd = audio.end > 0 ? audio.end : Infinity;
-    const absolute = toAbsoluteWindow(
-      audio.start,
-      authoredEnd,
-      windowFor(elementId),
-      audio.mediaStart,
-    );
+    const absolute = toAbsoluteWindow(audio.start, authoredEnd, windowFor(elementId), audio);
     if (!absolute) continue;
     audios.push({
       ...audio,
