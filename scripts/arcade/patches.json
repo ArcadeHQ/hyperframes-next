@@ -1,0 +1,43 @@
+{
+  "upstream": "upstream/main",
+  "base": "main",
+  "integrationBranch": "arcade",
+  "patches": [
+    {
+      "branch": "patch/arcade-tooling",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/playback-start-nested",
+      "issue": "https://github.com/heygen-com/hyperframes/issues/3245",
+      "upstreamPr": "https://github.com/heygen-com/hyperframes/pull/3246"
+    },
+    {
+      "branch": "patch/probe-seek-swallow",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/jump-seek-css-settle",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/discover-host-window",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/discover-video-opacity",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/render-settle-pass",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/vp9-alpha-probe",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/cloud-run-chrome-152"
+    }
+  ]
+}
