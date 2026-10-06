@@ -37,6 +37,7 @@ import { isKnownInactiveTimelineWindow } from "./mediaTimelineWindow.js";
 import {
   extractFinalVideoFrameTimestamp,
   extractMediaMetadata,
+  pixelFormatHasAlpha,
   type VideoMetadata,
 } from "../utils/ffprobe.js";
 import {
@@ -890,7 +891,11 @@ export async function extractVideoFramesRange(
       `Video media start ${startTime}s is outside playable video duration ${playableDuration}s`,
     );
   }
-  const format = resolveFrameFormat(metadata, options.format);
+  const format = resolveFrameFormat(
+    metadata,
+    options.format,
+    await probeAlphaPlane(videoPath, metadata.videoCodec, signal),
+  );
   const framePattern = `${FRAME_FILENAME_PREFIX}%05d.${format}`;
   const outputPattern = join(videoOutputDir, framePattern);
 
@@ -1436,11 +1441,85 @@ export function decoderForCodec(codec: string | undefined): string {
   return c;
 }
 
+/**
+ * Whether the alpha-aware decoder emits an alpha plane for a source. Tags and
+ * the default decoder's `pix_fmt` miss the WebM BlockAdditional sidecar, and
+ * Chrome tags opaque canvas recordings `ALPHA_MODE=1`, so only a forced-decoder
+ * frame answers it. A plane cannot appear mid-stream.
+ */
+export type AlphaPlaneProbe = "present" | "absent" | "unknown";
+
+const ALPHA_PROBE_TIMEOUT_MS = 30_000;
+const alphaPlaneProbes = new Map<string, Promise<AlphaPlaneProbe>>();
+
+/** Pure parser for the probe's `showinfo` stderr. Exported for tests. */
+export function parseAlphaPlaneProbe(stderr: string): AlphaPlaneProbe {
+  const pixFmt = /\bfmt:(\S+)/.exec(stderr)?.[1];
+  if (!pixFmt) return "unknown";
+  return pixelFormatHasAlpha(pixFmt) ? "present" : "absent";
+}
+
+/**
+ * Decode one frame with the alpha-aware decoder and read its native pixel
+ * format. Never `-pix_fmt rgba`: that invents an opaque A channel. Fails
+ * closed to "unknown" (PNG) on decode failure or timeout.
+ */
+function probeAlphaPlane(
+  videoPath: string,
+  codec: string | undefined,
+  signal?: AbortSignal,
+): Promise<AlphaPlaneProbe> {
+  if (!codecMayHaveAlpha(codec)) return Promise.resolve("absent");
+  const key = `${videoPath}\0${codec}`;
+  const cached = alphaPlaneProbes.get(key);
+  if (cached) return cached;
+  const startedAt = Date.now();
+  const probe = runFfmpeg(
+    [
+      "-hide_banner",
+      "-nostats",
+      "-loglevel",
+      "info",
+      "-c:v",
+      decoderForCodec(codec),
+      "-i",
+      videoPath,
+      "-map",
+      "0:v:0",
+      "-frames:v",
+      "1",
+      "-vf",
+      "showinfo",
+      "-f",
+      "null",
+      "-",
+    ],
+    { signal, timeout: ALPHA_PROBE_TIMEOUT_MS },
+  )
+    .then((result) => (result.success ? parseAlphaPlaneProbe(result.stderr) : "unknown"))
+    .catch((): AlphaPlaneProbe => "unknown")
+    .then((verdict) => {
+      console.info(
+        `[alphaPlaneProbe] ${verdict} codec=${codec} ms=${Date.now() - startedAt} path=${videoPath}`,
+      );
+      return verdict;
+    });
+  alphaPlaneProbes.set(key, probe);
+  return probe;
+}
+
 export function resolveFrameFormat(
   metadata: VideoMetadata,
   requested?: VideoFrameFormat,
+  alphaPlane: AlphaPlaneProbe = "unknown",
 ): CacheFrameFormat {
-  if (metadata.hasAlpha || codecMayHaveAlpha(metadata.videoCodec)) return "png";
+  // For alpha-capable codecs the decoded plane is the answer; the tag is wrong
+  // both ways (missed sidecar, or `ALPHA_MODE=1` on opaque Chrome recordings).
+  if (codecMayHaveAlpha(metadata.videoCodec)) {
+    if (alphaPlane !== "absent") return "png";
+  } else if (metadata.hasAlpha) {
+    return "png";
+  }
   if (requested === "png" || requested === "jpg") return requested;
   return "jpg";
 }
@@ -2192,7 +2271,11 @@ export async function extractAllVideoFrames(
         const extractionMediaStart = window.extractionMediaStart ?? window.mediaStart;
         if (keyInput) keyInput.mediaStart = extractionMediaStart;
 
-        const format = resolveFrameFormat(metadata, options.format);
+        const format = resolveFrameFormat(
+          metadata,
+          options.format,
+          await probeAlphaPlane(videoPath, metadata.videoCodec, signal),
+        );
         const sdrToHdrTransfer = sdrToHdrTransfers[index];
         const hdrToSdrTransform =
           options.toneMapHdrToSdr === true && isHdrColorSpaceUtil(metadata.colorSpace)
