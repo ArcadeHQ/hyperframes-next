@@ -43,7 +43,12 @@ import {
   isTransientBrowserError,
   probeBeginFrameLiveness,
 } from "@hyperframes/engine";
-import { fpsToNumber } from "@hyperframes/core";
+import {
+  MEDIA_RENDER_ID_ATTR,
+  extendVideoSlotEnds,
+  fpsToNumber,
+  type VideoSlotEnd,
+} from "@hyperframes/core";
 import { extractMediaSrcMutations } from "@hyperframes/parsers";
 import type { CompiledComposition } from "../../htmlCompiler.js";
 import {
@@ -156,6 +161,30 @@ export function hasScriptedAudioVolumeAutomation(html: string, audioCount: numbe
 export function hasAutoStartVideos(html: string): boolean {
   const { document } = parseHTML(html);
   return document.querySelector("video[data-hf-auto-start]") !== null;
+}
+
+function applyVideoSlotEnds(compiled: CompiledComposition, slots: readonly VideoSlotEnd[]): void {
+  if (slots.length === 0) return;
+  compiled.html = extendVideoSlotEnds(compiled.html, slots);
+  for (const [path, html] of compiled.subCompositions) {
+    compiled.subCompositions.set(path, extendVideoSlotEnds(html, slots));
+  }
+}
+
+/** Videos whose file was in the HTML at compile time — the player already ran the host clock. */
+function staticSrcVideoIds(html: string): Set<string> {
+  const { document } = parseHTML(html);
+  const ids = new Set<string>();
+  for (const el of document.querySelectorAll("video")) {
+    const ownSrc = el.getAttribute("src")?.trim();
+    const childSrc = [...el.querySelectorAll("source")].some((source) =>
+      Boolean(source.getAttribute("src")?.trim()),
+    );
+    if (!ownSrc && !childSrc) continue;
+    const id = el.getAttribute("data-hf-render-id") || el.id;
+    if (id) ids.add(id);
+  }
+  return ids;
 }
 
 /**
@@ -695,16 +724,43 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
         );
         assertNotAborted();
 
+        const hostClockIds = staticSrcVideoIds(compiled.html);
+        const slotEnds: VideoSlotEnd[] = [];
         for (const win of visibilityWindows) {
           const video = composition.videos.find((v) => v.id === win.videoId);
           if (!video) continue;
           if (win.visibleStart >= 0 && win.visibleEnd > win.visibleStart) {
-            video.start = win.visibleStart;
+            const prevStart = video.start;
+            // Host-window maps origin; never pull start earlier than that floor.
+            video.start = Math.max(video.start, win.visibleStart);
             video.end = win.visibleEnd;
+            const raised = video.start - prevStart;
+            if (raised > 0 && video.mediaStart <= 0 && hostClockIds.has(video.id)) {
+              video.mediaStart += raised;
+            }
+            const duration = video.end - prevStart;
+            if (duration > 0) {
+              slotEnds.push({ id: video.id, end: video.end, duration });
+            }
             log.info(
-              `[Probe] Runtime video discovery: ${video.id} visible ${win.visibleStart.toFixed(2)}s–${win.visibleEnd.toFixed(2)}s`,
+              `[Probe] Runtime video discovery: ${video.id} visible ${win.visibleStart.toFixed(2)}s–${win.visibleEnd.toFixed(2)}s → ${video.start.toFixed(2)}s–${video.end.toFixed(2)}s`,
             );
           }
+        }
+        if (slotEnds.length > 0) {
+          applyVideoSlotEnds(compiled, slotEnds);
+          writeCompiledArtifacts(compiled, workDir, Boolean(job.config.debug));
+          await session.page.evaluate((rows: VideoSlotEnd[]) => {
+            for (const row of rows) {
+              const el = ((
+                window as unknown as { __hfMediaEl?: (id: string) => Element | null }
+              ).__hfMediaEl?.(row.id) ??
+                document.getElementById(row.id)) as HTMLVideoElement | null;
+              if (!el) continue;
+              el.setAttribute("data-end", String(row.end));
+              el.setAttribute("data-duration", String(row.duration));
+            }
+          }, slotEnds);
         }
       }
     }
