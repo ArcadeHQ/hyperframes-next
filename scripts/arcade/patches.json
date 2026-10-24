@@ -8,11 +8,6 @@
       "keepLocal": true
     },
     {
-      "branch": "patch/playback-start-nested",
-      "issue": "https://github.com/heygen-com/hyperframes/issues/3245",
-      "upstreamPr": "https://github.com/heygen-com/hyperframes/pull/3246"
-    },
-    {
       "branch": "patch/probe-seek-swallow",
       "keepLocal": true
     },
