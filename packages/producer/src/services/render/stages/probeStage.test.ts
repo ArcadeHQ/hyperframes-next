@@ -14,6 +14,7 @@ import { collectRenderMedia } from "../../renderMediaCollector.js";
 const workDir = mkdtempSync(join(tmpdir(), "hf-stage-test-"));
 afterAll(() => rmSync(workDir, { recursive: true, force: true }));
 import { createHash } from "node:crypto";
+import { shiftRateLane, sourceTimeAt } from "@hyperframes/core";
 import {
   hasAutoStartVideos,
   hasScriptedAudioVolumeAutomation,
@@ -33,6 +34,7 @@ let mediaPreflightComposition: unknown;
 let afterMediaPreflight: (() => void) | null = null;
 let fileServerCloseCallCount = 0;
 let browserMediaResults: unknown[] = [];
+let visibilityWindows: { videoId: string; visibleStart: number; visibleEnd: number }[] = [];
 
 type MockSession = {
   id: number;
@@ -91,6 +93,7 @@ function resetRetryMocks() {
   afterMediaPreflight = null;
   fileServerCloseCallCount = 0;
   browserMediaResults = [];
+  visibilityWindows = [];
 }
 
 mock.module("../../assetMediaType.js", () => ({
@@ -200,7 +203,7 @@ mock.module("../../fileServer.js", () => ({
 mock.module("../../htmlCompiler.js", () => ({
   discoverMediaFromBrowser: async () => browserMediaResults,
   discoverAudioVolumeAutomationFromTimeline: async () => [],
-  discoverVideoVisibilityFromTimeline: async () => [],
+  discoverVideoVisibilityFromTimeline: async () => visibilityWindows,
   recompileWithResolutions: async (c: unknown) => c,
   resolveCompositionDurations: async () => [],
 }));
@@ -922,6 +925,205 @@ describe("runProbeStage — forceScreenshot threading", () => {
       expect(closeCaptureSessionCallCount).toBe(check === 1 ? 0 : 1);
     },
   );
+
+  it("binds authored mediaStart to the visibility window, not scene start", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3.5, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 3,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({
+        id: "clip",
+        start: 3.5,
+        end: 6,
+        mediaStart: 3,
+      }),
+    );
+  });
+
+  it("shifts auto-start mediaStart when visibility raises start", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3.5, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 0,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({
+        id: "clip",
+        start: 3.5,
+        end: 6,
+        mediaStart: 1.5,
+      }),
+    );
+  });
+
+  it("shifts auto-start mediaStart by the source time a sped-up clip played", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3.5, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 0,
+      playbackRate: 2,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({ id: "clip", start: 3.5, end: 6, mediaStart: 3, playbackRate: 2 }),
+    );
+  });
+
+  it("shifts a rate lane to the raised start", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    const lane = {
+      target: "rate",
+      points: [
+        { t: 0, v: 1 },
+        { t: 2, v: 3 },
+      ],
+    } satisfies RateSpec;
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 0,
+      playbackRate: lane,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    const video = input.composition.videos[0]!;
+    expect(video.start).toBe(3);
+    expect(video.mediaStart).toBeCloseTo(sourceTimeAt(lane, 1), 9);
+    expect(video.playbackRate).toEqual(shiftRateLane(lane, 1));
+  });
+
+  it("leaves mediaStart at 0 when visibility raises start on an empty-src video", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3.5, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 0,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({
+        id: "clip",
+        start: 3.5,
+        end: 6,
+        mediaStart: 0,
+      }),
+    );
+  });
+
+  it("keeps the visibility out-point so a short overlay holds after host+fileLen", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 3.5, visibleEnd: 6 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 4,
+      mediaStart: 0,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-start="2" data-end="4" data-duration="2" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({
+        id: "clip",
+        start: 3.5,
+        end: 6,
+        mediaStart: 1.5,
+      }),
+    );
+    expect(input.compiled.html).toContain('data-start="2"');
+    expect(input.compiled.html).toContain('data-end="6"');
+    expect(input.compiled.html).toContain('data-duration="4"');
+  });
+
+  it("does not let visibility pull start earlier than the host-mapped start", async () => {
+    resetRetryMocks();
+    visibilityWindows = [{ videoId: "clip", visibleStart: 0, visibleEnd: 4 }];
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.videos.push({
+      id: "clip",
+      src: "runtime.mp4",
+      start: 2,
+      end: 6,
+      mediaStart: 0,
+      loop: false,
+      hasAudio: false,
+    });
+    input.compiled.html = `<video id="clip" src="runtime.mp4" data-hf-auto-start=""></video>`;
+
+    await runProbeStage(input);
+
+    expect(input.composition.videos[0]).toEqual(
+      expect.objectContaining({
+        id: "clip",
+        start: 2,
+        end: 4,
+        mediaStart: 0,
+      }),
+    );
+  });
 
   it("launches a probe when a static-duration composition inserts video at runtime", async () => {
     capturedCfgs.length = 0;
