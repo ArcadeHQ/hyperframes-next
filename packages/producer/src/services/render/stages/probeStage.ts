@@ -800,7 +800,10 @@ export async function runProbeStage(input: ProbeStageInput): Promise<ProbeStageR
             video.end = win.visibleEnd;
             const raised = video.start - prevStart;
             if (raised > 0 && video.mediaStart <= 0 && hostClockIds.has(video.id)) {
-              video.mediaStart += raised;
+              const rate = normalizeRateSpec(video.playbackRate);
+              video.mediaStart += sourceTimeAt(rate, raised);
+              if (video.playbackRate !== undefined)
+                video.playbackRate = shiftRateLane(rate, raised);
             }
             const duration = video.end - prevStart;
             if (duration > 0) {
