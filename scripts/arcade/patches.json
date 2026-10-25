@@ -30,9 +30,6 @@
     {
       "branch": "patch/vp9-alpha-probe",
       "keepLocal": true
-    },
-    {
-      "branch": "patch/cloud-run-chrome-152"
     }
   ]
 }
