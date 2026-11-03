@@ -1148,6 +1148,7 @@ async function compilePlanComposition(
     strictness: config.strictness,
     entryFile: config.entryFile ?? "index.html",
     logger: config.logger,
+    pageMotionBlur: config.pageMotionBlur,
     producerConfig: cfg,
     variables: config.variables,
   });
