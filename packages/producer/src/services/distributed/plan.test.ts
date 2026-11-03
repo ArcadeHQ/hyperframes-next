@@ -190,15 +190,18 @@ describe("distributed synthetic render job", () => {
     expect(job.config.variables).toEqual(variables);
   });
 
-  it("turns the page's capture motion blur off for the plan probe (R19)", () => {
-    const job = buildSyntheticRenderJob({
+  it("leaves the plan probe's page motion blur to the composition unless the caller turns it off", () => {
+    const input = {
       fps: { num: 30, den: 1 },
-      format: "mp4",
-      quality: "high",
-      hdrMode: "force-sdr",
+      format: "mp4" as const,
+      quality: "high" as const,
+      hdrMode: "force-sdr" as const,
       entryFile: "index.html",
-    });
-    expect(job.config.pageMotionBlur).toBe("off");
+    };
+    expect(buildSyntheticRenderJob(input).config.pageMotionBlur).toBeUndefined();
+    expect(buildSyntheticRenderJob({ ...input, pageMotionBlur: "off" }).config.pageMotionBlur).toBe(
+      "off",
+    );
   });
 
   it("keeps the production software-GPU launch on BeginFrame control", () => {
@@ -551,25 +554,35 @@ describe("resolveChunkPlan", () => {
   });
 });
 
-describe("plan() and page motion blur (R19)", () => {
-  const planCaptureMode = async (html: string, name: string) => {
+describe("plan() and page motion blur", () => {
+  const planCaptureMode = async (html: string, name: string, pageMotionBlur?: "off") => {
     const dir = join(runRoot, name);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "index.html"), html, "utf-8");
     const planDir = join(runRoot, `${name}-plan`);
-    await plan(dir, { fps: 30, width: 320, height: 240, format: "mp4" }, planDir);
+    await plan(dir, { fps: 30, width: 320, height: 240, format: "mp4", pageMotionBlur }, planDir);
     const meta = JSON.parse(readFileSync(join(planDir, "meta", "encoder.json"), "utf-8"));
     return { captureMode: meta.captureMode ?? null, forceScreenshot: meta.forceScreenshot ?? null };
   };
+  const blur = FIXTURE_HTML.replace(
+    'data-composition-id="root"',
+    'data-composition-id="root" data-motion-blur="on"',
+  );
 
-  it("does not route a data-motion-blur composition through screenshot capture", async () => {
-    const blur = FIXTURE_HTML.replace(
-      'data-composition-id="root"',
-      'data-composition-id="root" data-motion-blur="on"',
-    );
-    const plain = await planCaptureMode(FIXTURE_HTML, "blur-plain");
-    const blurred = await planCaptureMode(blur, "blur-on");
-    expect(blurred).toEqual(plain);
+  it("routes a data-motion-blur composition through screenshot capture", async () => {
+    expect(await planCaptureMode(FIXTURE_HTML, "blur-plain")).toEqual({
+      captureMode: "beginframe",
+      forceScreenshot: false,
+    });
+    expect(await planCaptureMode(blur, "blur-on")).toEqual({
+      captureMode: "screenshot",
+      forceScreenshot: true,
+    });
+  }, 30_000);
+
+  it("keeps a data-motion-blur composition on beginframe capture when the caller turns blur off", async () => {
+    const plain = await planCaptureMode(FIXTURE_HTML, "blur-off-plain");
+    expect(await planCaptureMode(blur, "blur-on-off", "off")).toEqual(plain);
   }, 30_000);
 });
 
