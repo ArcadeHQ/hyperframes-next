@@ -30,6 +30,10 @@
     {
       "branch": "patch/vp9-alpha-probe",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/distributed-page-motion-blur",
+      "keepLocal": true
     }
   ]
 }
