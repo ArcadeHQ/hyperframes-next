@@ -372,6 +372,8 @@ export type RuntimeTimelineChildLike = {
   vars?: unknown;
   startTime?: () => number;
   duration?: () => number;
+  totalDuration?: () => number;
+  timeScale?: () => number;
   data?: unknown;
   parent?: RuntimeTimelineChildLike;
   getChildren?: RuntimeTimelineLike["getChildren"];
