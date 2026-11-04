@@ -1,4 +1,4 @@
-import type { RuntimeTimelineLike } from "./types";
+import type { RuntimeTimelineChildLike, RuntimeTimelineLike } from "./types";
 import { clampAudioGain, withUnclampedVolume } from "../audioGain.js";
 import { parseStrictFiniteTimingNumber } from "./playbackRate";
 import { createRuntimeStartTimeResolver } from "./startResolver";
@@ -241,24 +241,40 @@ function hasSetter(target: unknown, key: string): boolean {
 
 export interface VolumeMovers {
   elements: Set<unknown>;
-  anySetter: boolean;
+  /** Tweens on a non-DOM target whose tweened property is a setter: a gain proxy, or a clock that redraws. */
+  setterTweens: RuntimeTimelineChildLike[];
+  /** Per document, the media a setter tween wrote `volume` on when played once; null when that could not be told. */
+  setterWrites: Map<Document, Set<unknown> | null>;
   unknown: boolean;
 }
 
 export function volumeMoversOf(timeline: RuntimeTimelineRef): VolumeMovers {
-  const unknown: VolumeMovers = { elements: new Set(), anySetter: false, unknown: true };
+  const setterWrites = new Map<Document, Set<unknown> | null>();
+  const unknown: VolumeMovers = {
+    elements: new Set(),
+    setterTweens: [],
+    setterWrites,
+    unknown: true,
+  };
   if (typeof timeline.getChildren !== "function") return unknown;
   try {
-    const movers: VolumeMovers = { elements: new Set(), anySetter: false, unknown: false };
+    const movers: VolumeMovers = {
+      elements: new Set(),
+      setterTweens: [],
+      setterWrites,
+      unknown: false,
+    };
     for (const tween of timeline.getChildren(true, true, false)) {
       const targets: unknown[] = tween.targets?.() ?? [];
+      let setter = false;
       for (const target of targets) {
         if (isDomNode(target)) {
           if (namesKey(tween.vars, (key) => key === "volume")) movers.elements.add(target);
-        } else if (!movers.anySetter && namesKey(tween.vars, (key) => hasSetter(target, key))) {
-          movers.anySetter = true;
+        } else if (!setter && namesKey(tween.vars, (key) => hasSetter(target, key))) {
+          setter = true;
         }
       }
+      if (setter) movers.setterTweens.push(tween);
     }
     return movers;
   } catch {
@@ -266,8 +282,106 @@ export function volumeMoversOf(timeline: RuntimeTimelineRef): VolumeMovers {
   }
 }
 
-const canMoveVolume = (movers: VolumeMovers, el: HTMLMediaElement): boolean =>
-  movers.unknown || movers.anySetter || movers.elements.has(el);
+/** `local` seconds into `child`, on `timeline`'s clock; undefined when `child` does not hang under `timeline`. */
+function timeOnTimeline(
+  timeline: RuntimeTimelineRef,
+  child: RuntimeTimelineChildLike,
+  local: number,
+): number | undefined {
+  let time = local;
+  let node: RuntimeTimelineChildLike | undefined = child;
+  for (let depth = 0; node && node !== timeline && depth < 64; depth += 1) {
+    const start = Number(node.startTime?.());
+    const scale = Number(node.timeScale?.() ?? 1);
+    if (!Number.isFinite(start) || !Number.isFinite(scale) || scale <= 0) return undefined;
+    time = start + time / scale;
+    node = node.parent;
+  }
+  return node === timeline ? time : undefined;
+}
+
+/** Call `onWrite` on every `el.volume` assignment until the returned undo runs; null when it cannot. */
+function spyVolumeWrites(el: Element, onWrite: () => void): (() => void) | null {
+  if (Object.getOwnPropertyDescriptor(el, "volume")) return null;
+  let native: PropertyDescriptor | undefined;
+  for (let o = Object.getPrototypeOf(el); o && !native; o = Object.getPrototypeOf(o)) {
+    native = Object.getOwnPropertyDescriptor(o, "volume");
+  }
+  const { get, set } = native ?? {};
+  if (!get || !set) return null;
+  Object.defineProperty(el, "volume", {
+    configurable: true,
+    get() {
+      return get.call(this);
+    },
+    set(value: unknown) {
+      onWrite();
+      set.call(this, value);
+    },
+  });
+  return () => delete (el as { volume?: unknown }).volume;
+}
+
+/**
+ * Which of `doc`'s media a setter tween writes `volume` on, found by seeking `timeline` once to the
+ * middle of each setter tween with every media element's volume watched. A proxy that writes volume
+ * does so whenever its setter runs, so one call answers; a clock that only redraws costs one redraw
+ * here instead of 60 per second of every clip. Null (sample every element) when a tween cannot be
+ * placed on the timeline or an element cannot be watched.
+ */
+function scanSetterVolumeWrites(
+  timeline: RuntimeTimelineRef,
+  tweens: RuntimeTimelineChildLike[],
+  doc: Document,
+  seek: (t: number) => void,
+): Set<unknown> | null {
+  const times: number[] = [];
+  for (const tween of tweens) {
+    const span = Number(tween.totalDuration?.() ?? tween.duration?.() ?? 0);
+    const time = timeOnTimeline(timeline, tween, Number.isFinite(span) ? span / 2 : 0);
+    if (time === undefined) return null;
+    times.push(time);
+  }
+  const written = new Set<unknown>();
+  const undos: (() => void)[] = [];
+  try {
+    for (const el of doc.querySelectorAll("audio, video")) {
+      const undo = spyVolumeWrites(el, () => written.add(el));
+      if (!undo) return null;
+      undos.push(undo);
+    }
+    const originalTime = currentTime(timeline);
+    for (const time of times) seek(time);
+    if (Number.isFinite(originalTime)) seek(originalTime);
+    return written;
+  } finally {
+    for (const undo of undos) undo();
+  }
+}
+
+function currentTime(timeline: RuntimeTimelineRef): number {
+  return typeof timeline.totalTime === "function"
+    ? Number(timeline.totalTime())
+    : typeof timeline.seek === "function"
+      ? Number(timeline.seek())
+      : 0;
+}
+
+function canMoveVolume(
+  movers: VolumeMovers,
+  el: HTMLMediaElement,
+  timeline: RuntimeTimelineRef,
+  seek: (t: number) => void,
+): boolean {
+  if (movers.unknown || movers.elements.has(el)) return true;
+  if (movers.setterTweens.length === 0) return false;
+  if (!el.isConnected) return true;
+  const doc = el.ownerDocument;
+  if (!movers.setterWrites.has(doc)) {
+    movers.setterWrites.set(doc, scanSetterVolumeWrites(timeline, movers.setterTweens, doc, seek));
+  }
+  return movers.setterWrites.get(doc)?.has(el) ?? true;
+}
 
 /**
  * Probe a media element and, if volume automation is detected, store a
@@ -291,9 +405,6 @@ export function probeAndCacheElementVolume(
   if (!timeline) return;
   if (!isMediaElement(mediaEl)) return;
   if (compositionDuration <= 0) return;
-  // Sampling is ~60 whole-timeline seeks per second of clip, paid again on every rebind.
-  if (!canMoveVolume(options.movers?.() ?? volumeMoversOf(timeline), mediaEl)) return;
-
   const seekFn = (t: number) => {
     try {
       if (typeof timeline.totalTime === "function") {
@@ -305,15 +416,14 @@ export function probeAndCacheElementVolume(
       // ignore seek failures during probe
     }
   };
+  // Sampling is ~60 whole-timeline seeks per second of clip, paid again on every rebind.
+  const movers = options.movers?.() ?? volumeMoversOf(timeline);
+  if (!canMoveVolume(movers, mediaEl, timeline, seekFn)) return;
+
   // Sampling seeks the live timeline through the entire composition. Preserve
   // its playhead so the probe cannot perturb the first rendered frame (or any
   // user scrub in the preview).
-  const originalTime =
-    typeof timeline.totalTime === "function"
-      ? Number(timeline.totalTime())
-      : typeof timeline.seek === "function"
-        ? Number(timeline.seek())
-        : 0;
+  const originalTime = currentTime(timeline);
   const probeWindow = resolveVolumeProbeWindow(mediaEl, compositionDuration);
   const keyframes = probeKeyframesInWindow(mediaEl, seekFn, compositionDuration, 60, probeWindow);
   if (Number.isFinite(originalTime)) seekFn(originalTime);
