@@ -25,11 +25,29 @@ const FILTER_OUTPUT_LAYERS = [HIDDEN_CLIP, `${HIDDEN_CLIP} *`]
   .join(", ");
 const HIDE_FILTER_OUTPUT = `${FILTER_OUTPUT_LAYERS} { filter: none !important; }`;
 
+/**
+ * Shows every clip the runtime hides, for a GSAP render that may read a tween's
+ * start values for the first time. Covers both hides: a decided clip's inline
+ * `visibility: hidden`, and the sheet that hides every clip until the first
+ * visibility pass. Returns the function that puts both back.
+ */
 export function showHiddenClips(): () => void {
   const hidden = Array.from(document.querySelectorAll<HTMLElement>(`[${CLIP_HIDDEN_ATTR}]`));
   for (const el of hidden) el.style.visibility = "visible";
+  // Detached, not disabled: removal is the one lift every DOM honours (jsdom
+  // ignores both `disabled` and `media` on a style element).
+  const firstPassSheets = Array.from(
+    document.querySelectorAll<HTMLStyleElement>(`style[${HIDE_ATTR}]`),
+    (sheet) => ({ sheet, parent: sheet.parentNode, next: sheet.nextSibling }),
+  );
+  for (const { sheet } of firstPassSheets) sheet.remove();
   return () => {
     for (const el of hidden) el.style.visibility = "hidden";
+    for (const { sheet, parent, next } of firstPassSheets) {
+      // The first pass may have run meanwhile and lifted the rule for good.
+      if (!(window as FirstPassWindow).__hfFirstPassHidden || !parent) continue;
+      parent.insertBefore(sheet, next?.parentNode === parent ? next : null);
+    }
   };
 }
 

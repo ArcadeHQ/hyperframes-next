@@ -3,6 +3,7 @@ import { clampAudioGain, withUnclampedVolume } from "../audioGain.js";
 import { parseStrictFiniteTimingNumber } from "./playbackRate";
 import { createRuntimeStartTimeResolver } from "./startResolver";
 import { isMediaElement } from "./domRealm";
+import { showHiddenClips } from "./timedClipHide";
 
 /**
  * Shared volume-automation utilities used by both the renderer (offline PCM
@@ -315,8 +316,19 @@ export function probeAndCacheElementVolume(
         ? Number(timeline.seek())
         : 0;
   const probeWindow = resolveVolumeProbeWindow(mediaEl, compositionDuration);
-  const keyframes = probeKeyframesInWindow(mediaEl, seekFn, compositionDuration, 60, probeWindow);
-  if (Number.isFinite(originalTime)) seekFn(originalTime);
+  // The sweep is the first render of every tween in the clip's window, and a
+  // tween records the style it first reads as the value to restore on rewind.
+  // A clip the playhead is not in reads as hidden, so an autoAlpha or
+  // visibility tween under it would record "hidden" and write it back on every
+  // later seek before its start. Sweep with hidden clips shown, as jump seeks do.
+  const hideClipsAgain = showHiddenClips();
+  let keyframes: VolumeKeyframe[] | null;
+  try {
+    keyframes = probeKeyframesInWindow(mediaEl, seekFn, compositionDuration, 60, probeWindow);
+    if (Number.isFinite(originalTime)) seekFn(originalTime);
+  } finally {
+    hideClipsAgain();
+  }
   if (keyframes) {
     const envelope = normaliseEnvelope(keyframes, probeWindow.start, probeWindow.staticVolume);
     if (envelope.length > 0) cache.set(mediaEl, envelope);

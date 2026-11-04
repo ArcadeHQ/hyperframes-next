@@ -563,6 +563,46 @@ describe("initSandboxRuntimeModular", () => {
       },
     );
 
+    it("keeps a later clip's child visible after the volume probe first renders its autoAlpha cut", () => {
+      hideTimedClipsUntilFirstPass();
+      try {
+        document.body.innerHTML =
+          `<div data-composition-id="main" data-root="true" data-start="0" data-duration="9" data-width="1920" data-height="1080">` +
+          `<audio id="bed" data-start="0" data-duration="9"></audio>` +
+          `<div id="intro" style="position: absolute" data-start="0" data-duration="6"><div id="count"></div></div>` +
+          `<div id="outro" style="position: absolute" data-start="6" data-duration="3"><div id="title"></div></div>` +
+          `</div>`;
+        const tl = gsap.timeline({ paused: true });
+        // A tween on an object with a setter could drive a volume, so preview probes the bed's envelope.
+        const counter = {
+          value: 0,
+          get v() {
+            return this.value;
+          },
+          set v(next: number) {
+            this.value = next;
+          },
+        };
+        tl.to(counter, { v: 100, duration: 2 }, 0);
+        // The title's first tween: shown from its clip's start, cut out at 7.5.
+        tl.fromTo(
+          "#title",
+          { autoAlpha: 1 },
+          { autoAlpha: 0, duration: 0.01, immediateRender: false },
+          7.5,
+        );
+        window.__timelines = { main: tl as unknown as RuntimeTimelineLike };
+        initSandboxRuntimeModular();
+        const title = document.getElementById("title")!;
+        window.__player?.seek(6.5);
+        expect(getComputedStyle(title).visibility).toBe("visible");
+        expect(getComputedStyle(title).opacity).toBe("1");
+      } finally {
+        revealTimedClipsAfterFirstPass();
+        document.head.querySelector("style[data-hf-hidden-clip-contents]")?.remove();
+      }
+    });
+
     it("keeps a hidden scene's contents hidden when a rewound GSAP set marks one visible inline", () => {
       hideTimedClipsUntilFirstPass();
       try {
