@@ -34,6 +34,10 @@
     {
       "branch": "patch/distributed-page-motion-blur",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/preview-motion-blur-filter-copies",
+      "keepLocal": true
     }
   ]
 }
