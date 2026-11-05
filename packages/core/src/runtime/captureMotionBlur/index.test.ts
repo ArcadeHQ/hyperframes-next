@@ -1637,9 +1637,21 @@ describe("filter fallback", () => {
     void paintCaptureMotionBlur(0.5, PLAY);
     expect(el.style.filter).toMatch(/url\("?#hf-mb-0"?\)/);
     expect(root.parentElement).toBe(document.body);
-    expect(document.querySelectorAll("feOffset")).toHaveLength(32);
-    expect(document.querySelectorAll("feComposite")).toHaveLength(31);
+    expect(document.querySelectorAll("feOffset")).toHaveLength(8);
+    expect(document.querySelectorAll("feComposite")).toHaveLength(7);
     expect(document.querySelectorAll("feGaussianBlur")).toHaveLength(1);
+  });
+
+  it("draws a render with 32 copies, and rebuilds the filter in place after playback", () => {
+    const { el, h } = movingHost();
+    initCaptureMotionBlur(h);
+    void paintCaptureMotionBlur(0.5, PLAY);
+    expect(document.querySelectorAll("#hf-mb-0 feOffset")).toHaveLength(8);
+    void paintCaptureMotionBlur(0.5, { engineMode: true });
+    expect(el.style.filter).toMatch(/url\("?#hf-mb-0"?\)/);
+    expect(document.querySelectorAll("filter")).toHaveLength(1);
+    expect(document.querySelectorAll("#hf-mb-0 feOffset")).toHaveLength(32);
+    expect(document.querySelectorAll("#hf-mb-0 feComposite")).toHaveLength(31);
   });
 
   it("stays off when the renderer turned blur off", () => {
