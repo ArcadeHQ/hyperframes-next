@@ -13,8 +13,13 @@ import { createPoseReader } from "./pose";
 import type { CaptureMotionBlurHost, Config, Report, Tier } from "./tier";
 
 const NS = "http://www.w3.org/2000/svg";
-/** Copies per mover; the softening along the motion closes the steps between them. */
-const COPIES = 32;
+/**
+ * Copies per mover; the softening along the motion closes the steps between them. Each copy is a
+ * full-size pass over the mover, so live playback takes fewer: with many movers, 32 drop frames.
+ * Powers of two, so the pairwise average weighs every copy alike.
+ */
+const RENDER_COPIES = 32;
+const PREVIEW_COPIES = 8;
 const PREVIEW_READS = 4;
 const RENDER_READS = 8;
 const FILTER_ID = "hf-mb";
@@ -40,15 +45,14 @@ function node<K extends keyof SVGElementTagNameMap>(
   return el;
 }
 
-/** 32 offset copies, averaged in pairs so 8-bit filter buffers do not band, then softened. */
-function buildLayer(defs: SVGDefsElement, index: number, el: HTMLElement): Layer {
-  const id = `${FILTER_ID}-${index}`;
+/** Offset copies, averaged in pairs so 8-bit filter buffers do not band, then softened. */
+function buildLayer(defs: SVGDefsElement, id: string, el: HTMLElement, copies: number): Layer {
   const filter = node(defs, "filter", {
     id,
     "color-interpolation-filters": "sRGB",
     filterUnits: "userSpaceOnUse",
   });
-  const offsets = Array.from({ length: COPIES }, (_, k) =>
+  const offsets = Array.from({ length: copies }, (_, k) =>
     node(filter, "feOffset", { in: "SourceGraphic", result: `s${k}` }),
   );
   let level = offsets.map((_, k) => `s${k}`);
@@ -145,9 +149,11 @@ export function createFilterTier(
     for (const el of [...styled]) drop(el);
   }
 
-  function layerOf(el: HTMLElement): Layer {
-    let layer = layers.get(el);
-    if (layer) return layer;
+  /** The mover's filter, rebuilt in place if a render and playback share the page. */
+  function layerOf(el: HTMLElement, copies: number): Layer {
+    const old = layers.get(el);
+    if (old?.offsets.length === copies) return old;
+    old?.filter.remove();
     if (!defs) {
       defs = document.createElementNS(NS, "svg");
       defs.setAttribute("width", "0");
@@ -158,13 +164,14 @@ export function createFilterTier(
       node(defs, "defs", {});
       root.append(defs);
     }
-    layer = buildLayer(defs.querySelector("defs") ?? defs, layers.size, el);
+    const id = old ? old.filter.id : `${FILTER_ID}-${layers.size}`;
+    const layer = buildLayer(defs.querySelector("defs") ?? defs, id, el, copies);
     layers.set(el, layer);
     return layer;
   }
 
   function show(el: HTMLElement, plan: FilterPlan): void {
-    const layer = layerOf(el);
+    const layer = layerOf(el, plan.offsets.length);
     aim(layer, plan);
     const base = strip(el) || layer.css;
     el.style.filter = base ? `${base} ${layer.url}` : layer.url;
@@ -182,7 +189,7 @@ export function createFilterTier(
       t,
       reads: engineMode ? RENDER_READS : PREVIEW_READS,
       shutterSeconds: config.shutterDeg / 360 / host.fps,
-      taps: COPIES,
+      taps: engineMode ? RENDER_COPIES : PREVIEW_COPIES,
       frameW: width,
       frameH: height,
     });
