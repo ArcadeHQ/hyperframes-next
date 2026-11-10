@@ -299,8 +299,15 @@ function hasRuntimeMediaChanges(html: string): boolean {
     if (name === "video" || name === "audio") return true;
     return name === "source" && element.closest("video, audio") !== null;
   };
+  const hasManagedMedia = document.querySelector("video, audio") !== null;
   for (const script of scriptBodies) {
     for (const mutation of extractMediaSrcMutations(script)) {
+      // A write whose target can't be resolved statically, such as one in a loop
+      // over querySelectorAll, may land on any media in the document.
+      if (!mutation.selector) {
+        if (hasManagedMedia) return true;
+        continue;
+      }
       try {
         const id = /^#[A-Za-z_][\w-]*$/.test(mutation.selector) ? mutation.selector.slice(1) : null;
         const idTarget = id ? document.getElementById(id) : null;

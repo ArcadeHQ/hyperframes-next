@@ -389,6 +389,7 @@ function findRuntimeMediaSrcMutationFindings(ctx: LintContext): HyperframeLintFi
   const findings: HyperframeLintFinding[] = [];
   for (const script of ctx.scripts) {
     for (const mutation of extractMediaSrcMutations(script.content)) {
+      if (!mutation.selector) continue;
       let targets: Element[];
       try {
         const id = /^#[A-Za-z_][\w-]*$/.test(mutation.selector) ? mutation.selector.slice(1) : null;
