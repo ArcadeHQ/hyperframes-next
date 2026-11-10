@@ -39,6 +39,10 @@
       "branch": "patch/probe-untraced-media-src",
       "issue": "https://github.com/heygen-com/hyperframes/issues/7504",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/volume-probe-setter-scan",
+      "pr": 15
     }
   ]
 }
