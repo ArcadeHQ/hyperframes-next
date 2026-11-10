@@ -791,11 +791,11 @@ describe("resolveFrameFormat", () => {
   );
   function expectedFormat({ videoCodec, hasAlpha, alphaPlaneDecoded, requested }: FormatCase) {
     const sidecar = videoCodec === "vp9" || videoCodec === "vp8";
-    const keepsPng = hasAlpha || (sidecar && alphaPlaneDecoded !== false);
+    const keepsPng = sidecar ? alphaPlaneDecoded !== false : hasAlpha;
     return keepsPng || requested === "png" ? "png" : "jpg";
   }
 
-  it("lets VP8/VP9 leave png only when a decode probe found no alpha plane", () => {
+  it("lets VP8/VP9 leave png only when a decode probe found no alpha plane, whatever the tag", () => {
     expect(formatCases).toHaveLength(72);
     for (const { requested, ...fields } of formatCases) {
       const actual = resolveFrameFormat(metadata(fields), requested);
