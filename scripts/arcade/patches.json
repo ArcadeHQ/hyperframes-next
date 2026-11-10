@@ -38,6 +38,14 @@
     {
       "branch": "patch/preview-motion-blur-filter-copies",
       "keepLocal": true
+    },
+    {
+      "branch": "patch/probe-untraced-media-src",
+      "keepLocal": true
+    },
+    {
+      "branch": "patch/probe-var-src-media",
+      "keepLocal": true
     }
   ]
 }
