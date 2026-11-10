@@ -130,16 +130,14 @@ describe("volumeMoversOf", () => {
       ],
     });
     expect([...movers.elements]).toEqual([a]);
-    expect(movers.anySetter).toBe(false);
+    expect(movers.setterTweens).toEqual([]);
     expect(movers.unknown).toBe(false);
   });
 
   it("marks a tweened setter on a plain object, and a timeline that cannot list its tweens", () => {
     const gain = { set level(_v: number) {} };
-    expect(
-      volumeMoversOf({ getChildren: () => [{ targets: () => [gain], vars: { level: 0 } }] })
-        .anySetter,
-    ).toBe(true);
+    const tween = { targets: () => [gain], vars: { level: 0 } };
+    expect(volumeMoversOf({ getChildren: () => [tween] }).setterTweens).toEqual([tween]);
     expect(volumeMoversOf({}).unknown).toBe(true);
     expect(
       volumeMoversOf({
@@ -295,6 +293,76 @@ describe("probeAndCacheElementVolume", () => {
     probeAndCacheElementVolume(audio, timeline, 1, cache);
 
     expect(interpolateVolumeGain(cache.get(audio) ?? [], 0.5)).toBeCloseTo(0.25, 3);
+  });
+
+  it("seeks once per setter tween for a clock that only redraws, and does not sample", () => {
+    const audio = document.createElement("audio");
+    audio.dataset.start = "0";
+    audio.dataset.duration = "25";
+    document.body.append(audio);
+    let redraws = 0;
+    const clock = {
+      value: 0,
+      get t() {
+        return this.value;
+      },
+      set t(next: number) {
+        this.value = next;
+        redraws += 1;
+      },
+    };
+    const timeline = gsap.timeline({ paused: true });
+    timeline.to(clock, { t: 25, duration: 25, ease: "none" }, 0);
+    const cache = new WeakMap<HTMLMediaElement, { time: number; volume: number }[]>();
+
+    probeAndCacheElementVolume(audio, timeline, 25, cache);
+
+    // one seek into the tween and one back to the playhead, against ~1,500 for a full probe
+    expect(redraws).toBeLessThanOrEqual(2);
+    expect(cache.has(audio)).toBe(false);
+  });
+
+  it("samples only the element a proxy writes when a clock shares the timeline", () => {
+    const [voice, music] = [document.createElement("audio"), document.createElement("audio")];
+    for (const el of [voice, music]) {
+      el.dataset.start = "0";
+      el.dataset.duration = "2";
+      el.dataset.volume = "1";
+      document.body.append(el);
+    }
+    const proxy = {
+      get gain() {
+        return music.volume;
+      },
+      set gain(value: number) {
+        music.volume = value;
+      },
+    };
+    const clock = {
+      value: 0,
+      get t() {
+        return this.value;
+      },
+      set t(next: number) {
+        this.value = next;
+      },
+    };
+    const timeline = gsap.timeline({ paused: true });
+    timeline.to(clock, { t: 2, duration: 2, ease: "none" }, 0);
+    // nested, offset and time-scaled, so the scan has to place the tween on the root clock
+    const inner = gsap.timeline();
+    inner.fromTo(proxy, { gain: 1 }, { gain: 0, duration: 1, ease: "none" }, 0);
+    inner.timeScale(2);
+    timeline.add(inner, 1);
+    const cache = new WeakMap<HTMLMediaElement, { time: number; volume: number }[]>();
+    let movers: ReturnType<typeof volumeMoversOf> | undefined;
+    const shared = () => (movers ??= volumeMoversOf(timeline));
+
+    probeAndCacheElementVolume(voice, timeline, 2, cache, { movers: shared });
+    probeAndCacheElementVolume(music, timeline, 2, cache, { movers: shared });
+
+    expect(cache.has(voice)).toBe(false);
+    expect(interpolateVolumeGain(cache.get(music) ?? [], 1.25)).toBeCloseTo(0.5, 2);
   });
 
   it("still samples a keyframed volume tween on the element", () => {
