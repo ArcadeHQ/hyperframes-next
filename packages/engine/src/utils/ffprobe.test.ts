@@ -2254,6 +2254,7 @@ describe.skipIf(!HAS_FFPROBE)("VP8/VP9 decoded alpha plane probe on real files",
   let alphaVp8: string;
   let opaqueVp9: string;
   let opaqueVp8: string;
+  let taggedOpaqueVp9: string;
   let mpeg4: string;
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "hf-decoded-alpha-"));
@@ -2269,6 +2270,15 @@ describe.skipIf(!HAS_FFPROBE)("VP8/VP9 decoded alpha plane probe on real files",
     ]);
     opaqueVp9 = encode("opaque-vp9.webm", ["-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p"]);
     opaqueVp8 = encode("opaque-vp8.webm", ["-c:v", "libvpx", "-pix_fmt", "yuv420p"]);
+    // What Chrome's MediaRecorder writes: an alpha tag on a stream with no alpha plane.
+    taggedOpaqueVp9 = encode("tagged-opaque-vp9.webm", [
+      "-c:v",
+      "libvpx-vp9",
+      "-pix_fmt",
+      "yuv420p",
+      "-metadata:s:v:0",
+      "alpha_mode=1",
+    ]);
     mpeg4 = encode("opaque.mp4", ["-c:v", "mpeg4", "-pix_fmt", "yuv420p"]);
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -2282,16 +2292,17 @@ describe.skipIf(!HAS_FFPROBE)("VP8/VP9 decoded alpha plane probe on real files",
     expect(await probeDecodedAlphaPlane(join(dir, "missing.webm"), "libvpx-vp9")).toBeUndefined();
   });
 
-  it("extractMediaMetadata records alphaPlaneDecoded=false only for untagged VP8/VP9", async () => {
+  it("extractMediaMetadata records the decoded alpha plane for VP8/VP9, tagged or not", async () => {
     const { extractMediaMetadata } = await import("./ffprobe.js");
     const vp9 = await extractMediaMetadata(opaqueVp9);
     expect(vp9).toMatchObject({ videoCodec: "vp9", hasAlpha: false, alphaPlaneDecoded: false });
     const vp8 = await extractMediaMetadata(opaqueVp8);
     expect(vp8).toMatchObject({ videoCodec: "vp8", hasAlpha: false, alphaPlaneDecoded: false });
-    // Tagged alpha is already decided by hasAlpha, so it is not probed.
+    // A tagged stream is probed too: the tag does not say whether a plane exists.
     const tagged = await extractMediaMetadata(alpha);
-    expect(tagged.hasAlpha).toBe(true);
-    expect("alphaPlaneDecoded" in tagged).toBe(false);
+    expect(tagged).toMatchObject({ hasAlpha: true, alphaPlaneDecoded: true });
+    const taggedOpaque = await extractMediaMetadata(taggedOpaqueVp9);
+    expect(taggedOpaque).toMatchObject({ hasAlpha: true, alphaPlaneDecoded: false });
     const other = await extractMediaMetadata(mpeg4);
     expect(other.videoCodec).toBe("mpeg4");
     expect("alphaPlaneDecoded" in other).toBe(false);

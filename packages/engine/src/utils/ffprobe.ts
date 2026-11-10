@@ -217,7 +217,7 @@ export interface VideoMetadata {
   isVFR: boolean;
   /** True when the stream carries an alpha channel. */
   hasAlpha: boolean;
-  /** VP8/VP9 without an alpha tag: whether a frame decoded with the alpha-aware decoder had an alpha plane.
+  /** VP8/VP9, tagged alpha or not: whether a frame decoded with the alpha-aware decoder had an alpha plane.
    * Absent when not probed or the probe failed. */
   alphaPlaneDecoded?: boolean;
   /** Color space info from the video stream. Null if ffprobe didn't report it. */
@@ -1018,7 +1018,8 @@ export async function extractMediaMetadata(filePath: string): Promise<VideoMetad
     const pixelFormat = videoStream.pix_fmt || "";
     const sampleAspectRatio = parseSampleAspectRatio(videoStream.sample_aspect_ratio);
     const hasAlpha = videoStreamHasAlpha(videoStream);
-    const alphaDecoder = hasAlpha ? null : alphaDecoderFor(videoStream.codec_name);
+    // Probed even when tagged: Chrome's MediaRecorder writes ALPHA_MODE=1 on opaque recordings.
+    const alphaDecoder = alphaDecoderFor(videoStream.codec_name);
     const alphaPlaneDecoded = alphaDecoder
       ? await probeDecodedAlphaPlane(filePath, alphaDecoder)
       : undefined;

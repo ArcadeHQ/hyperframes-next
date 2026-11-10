@@ -1958,7 +1958,9 @@ export function resolveFrameFormat(
   requested?: VideoFrameFormat,
 ): CacheFrameFormat {
   const sidecar = SIDECAR_ALPHA_CODECS.has((metadata.videoCodec ?? "").toLowerCase());
-  if (metadata.hasAlpha || (sidecar && metadata.alphaPlaneDecoded !== false)) return "png";
+  // VP8/VP9: the decoded plane is the answer; the tag is wrong both ways (a missed
+  // sidecar, or ALPHA_MODE=1 on an opaque Chrome recording).
+  if (sidecar ? metadata.alphaPlaneDecoded !== false : metadata.hasAlpha) return "png";
   if (requested === "png" || requested === "jpg") return requested;
   return "jpg";
 }
