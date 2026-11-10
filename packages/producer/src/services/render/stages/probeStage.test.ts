@@ -1356,6 +1356,43 @@ describe("runProbeStage — forceScreenshot threading", () => {
     expect(capturedCfgs).toHaveLength(0);
   });
 
+  it("probes a src write whose target is resolved at runtime when the document has media", async () => {
+    resetRetryMocks();
+    capturedCfgs.length = 0;
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.duration = 5;
+    input.compiled.html = `<video id="clip" data-start="0" data-key="clipUrl" src="video-a.mp4"></video>
+      <script>
+        const S = { clipUrl: "video-b.mp4" };
+        document.querySelectorAll("[data-key]").forEach((el) => {
+          el.src = S[el.getAttribute("data-key")];
+        });
+      </script>`;
+
+    await runProbeStage(input);
+
+    expect(capturedCfgs.length).toBeGreaterThan(0);
+  });
+
+  it("does not probe a src write resolved at runtime when the document has no media", async () => {
+    resetRetryMocks();
+    capturedCfgs.length = 0;
+    const { runProbeStage } = await import("./probeStage.js");
+    const input = makeProbeInput({});
+    input.composition.duration = 5;
+    input.compiled.html = `<img class="logo" src="a.png">
+      <script>
+        document.querySelectorAll(".logo").forEach((el) => {
+          el.src = "b.png";
+        });
+      </script>`;
+
+    await runProbeStage(input);
+
+    expect(capturedCfgs).toHaveLength(0);
+  });
+
   it("probes when a source child of existing media is mutated", async () => {
     resetRetryMocks();
     capturedCfgs.length = 0;
