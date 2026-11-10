@@ -995,6 +995,46 @@ function coalesceHeadStylesAndBodyScripts(html: string): string {
   return document.toString();
 }
 
+/** Stamped on bound media whose variable gives a src other than its static one. */
+export const VARIABLE_SRC_CHANGED_ATTR = "data-hf-var-src-changed";
+
+/**
+ * Stamp bound audio and video that any declared default or host
+ * data-variable-values in their scope chain would give a src other than the
+ * static one media extraction reads. Runs before remote sources are localized,
+ * while both still read as authored.
+ */
+function markChangedVariableMediaSrc(
+  document: Document,
+  variablesByComp: Record<string, Record<string, unknown>>,
+): boolean {
+  const topLevel: Record<string, unknown> = {};
+  for (const declarer of document.querySelectorAll("[data-composition-variables]")) {
+    Object.assign(topLevel, readDeclaredDefaults(declarer));
+  }
+  let marked = false;
+  for (const el of document.querySelectorAll(
+    "audio[data-var-src], video[data-var-src], source[data-var-src]",
+  )) {
+    const id = el.getAttribute("data-var-src")!.trim();
+    const values = [topLevel[id]];
+    for (let scope = el.closest("[data-composition-id]"); scope; ) {
+      values.push(variablesByComp[scope.getAttribute("data-composition-id")!.trim()]?.[id]);
+      scope = scope.parentElement?.closest("[data-composition-id]") ?? null;
+    }
+    const changed = values.some((value) => {
+      const url =
+        value !== null && typeof value === "object" ? (value as { url?: unknown }).url : value;
+      return typeof url === "string" && url !== "" && url !== el.getAttribute("src");
+    });
+    if (changed) {
+      el.setAttribute(VARIABLE_SRC_CHANGED_ATTR, "");
+      marked = true;
+    }
+  }
+  return marked;
+}
+
 /**
  * Inline sub-composition HTML into the main document using the shared
  * inlining logic from @hyperframes/core. This wrapper handles the
@@ -1023,7 +1063,8 @@ function inlineSubCompositions(
       {},
       variableOverrides,
     );
-    return emitted ? document.toString() : html;
+    const marked = markChangedVariableMediaSrc(document as unknown as Document, {});
+    return emitted || marked ? document.toString() : html;
   }
 
   // Assign per-instance runtime composition ids before each host is inlined,
@@ -1181,6 +1222,7 @@ function inlineSubCompositions(
   // document-unique key here, while the merged document is in hand and before
   // anything downstream keys media on an id. See core's mediaRenderIds.ts.
   assignMediaRenderIds(document as unknown as Document);
+  markChangedVariableMediaSrc(document as unknown as Document, result.variablesByComp);
 
   return document.toString();
 }

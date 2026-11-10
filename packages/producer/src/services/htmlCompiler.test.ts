@@ -3025,6 +3025,57 @@ describe("sub-composition variable injection (render path, #2064)", () => {
   });
 });
 
+describe("variable-bound media src (render path)", () => {
+  function compileBoundClip(opts: { defaultSrc: string; hostVars?: string }) {
+    const projectDir = mkdtempSync(join(tmpdir(), "hf-var-src-"));
+    mkdirSync(join(projectDir, "compositions"), { recursive: true });
+    writeFileSync(
+      join(projectDir, "compositions", "clip.html"),
+      `<!DOCTYPE html>
+<html data-composition-variables='[{"id":"clip","type":"string","label":"Clip","default":"${opts.defaultSrc}"}]'>
+  <body>
+    <div data-composition-id="clip" data-width="320" data-height="240">
+      <video id="v" src="a.mp4" data-var-src="clip" data-start="0" data-duration="3" muted></video>
+    </div>
+  </body>
+</html>`,
+    );
+    writeFileSync(
+      join(projectDir, "index.html"),
+      `<!DOCTYPE html>
+<html>
+  <body>
+    <div id="root" data-composition-id="host" data-start="0" data-duration="3" data-width="320" data-height="240">
+      <div data-composition-id="clip-1" data-composition-src="compositions/clip.html" data-start="0" data-duration="3" data-track-index="1" ${opts.hostVars ?? ""}></div>
+    </div>
+  </body>
+</html>`,
+    );
+    return compileForRender(projectDir, join(projectDir, "index.html"), projectDir);
+  }
+
+  it("marks a clip whose host value differs from its static src", async () => {
+    const compiled = await compileBoundClip({
+      defaultSrc: "a.mp4",
+      hostVars: `data-variable-values='{"clip":"b.mp4"}'`,
+    });
+    expect(compiled.html).toContain("data-hf-var-src-changed");
+  });
+
+  it("marks a clip whose declared default differs from its static src", async () => {
+    const compiled = await compileBoundClip({ defaultSrc: "b.mp4" });
+    expect(compiled.html).toContain("data-hf-var-src-changed");
+  });
+
+  it("leaves a clip whose resolved value is its static src", async () => {
+    const compiled = await compileBoundClip({
+      defaultSrc: "b.mp4",
+      hostVars: `data-variable-values='{"clip":"a.mp4"}'`,
+    });
+    expect(compiled.html).not.toContain("data-hf-var-src-changed");
+  });
+});
+
 // ── Markup payload sniff (STUDIO-5433) ─────────────────────────────────────
 //
 // Producer's `resolveMediaDuration` is a two-step pipeline (download → probe)
