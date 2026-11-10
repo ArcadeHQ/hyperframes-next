@@ -380,6 +380,14 @@ describe("hasVariableBoundMedia", () => {
     expect(hasVariableBoundMedia(audio, { title: "Row 02" })).toBe(false);
     expect(hasVariableBoundMedia(image, { hero_src: "row-02.png" })).toBe(true);
   });
+
+  it("probes media the compiler marked as bound to a different src", () => {
+    const marked = `<video src="a.mp4" data-var-src="clip" data-hf-var-src-changed></video>`;
+    const unmarked = `<video src="a.mp4" data-var-src="clip"></video>`;
+
+    expect(hasVariableBoundMedia(marked, undefined)).toBe(true);
+    expect(hasVariableBoundMedia(unmarked, undefined)).toBe(false);
+  });
 });
 
 describe("runProbeStage — forceScreenshot threading", () => {

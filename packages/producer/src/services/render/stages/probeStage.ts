@@ -64,6 +64,7 @@ import {
   discoverVideoVisibilityFromTimeline,
   recompileWithResolutions,
   resolveCompositionDurations,
+  VARIABLE_SRC_CHANGED_ATTR,
 } from "../../htmlCompiler.js";
 import {
   closeFileServerSafely,
@@ -199,14 +200,17 @@ function staticSrcVideoIds(html: string): Set<string> {
 /**
  * Variable-bound image/audio/video sources are resolved by the browser runtime, not
  * the static compiler. Probe them whenever the current render overrides the
- * referenced variable so media extraction follows the resolved row value.
+ * referenced variable so media extraction follows the resolved row value, or
+ * when the compiler marked bound audio/video whose declared default or host
+ * data-variable-values differ from the static src.
  */
 export function hasVariableBoundMedia(
   html: string,
   variables: Record<string, unknown> | undefined,
 ): boolean {
-  if (!variables || Object.keys(variables).length === 0) return false;
   const { document } = parseHTML(html);
+  if (document.querySelector(`[${VARIABLE_SRC_CHANGED_ATTR}]`)) return true;
+  if (!variables || Object.keys(variables).length === 0) return false;
   return Array.from(
     document.querySelectorAll(
       "img[data-var-src], audio[data-var-src], video[data-var-src], source[data-var-src]",
