@@ -49,6 +49,7 @@ describe("extractMediaSrcMutations", () => {
     },
   ])("does not inherit an outer target through a $label", ({ script }) => {
     expect(extractMediaSrcMutations(script)).toEqual([
+      { selector: null, operation: "src_assignment", raw: `media.src = "image.png"` },
       { selector: "#video", operation: "src_assignment", raw: `media.src = "new.mp4"` },
     ]);
   });
@@ -81,13 +82,16 @@ describe("extractMediaSrcMutations", () => {
   it("does not inherit an outer target through a named class expression", () => {
     const script = `const media = document.getElementById("video"); const View = class media { update() { media.src = "not-a-video"; } }; media.src = "new.mp4";`;
     expect(extractMediaSrcMutations(script).map((mutation) => mutation.selector)).toEqual([
+      null,
       "#video",
     ]);
   });
 
   it("does not leak block declarations outside their scope", () => {
     const script = `{ const media = document.getElementById("video"); } media.src = "new.mp4";`;
-    expect(extractMediaSrcMutations(script)).toEqual([]);
+    expect(extractMediaSrcMutations(script)).toEqual([
+      { selector: null, operation: "src_assignment", raw: `media.src = "new.mp4"` },
+    ]);
   });
 
   it("retains direct and computed DOM lookups", () => {
@@ -108,6 +112,8 @@ describe("extractMediaSrcMutations", () => {
   });
 
   it("does not recurse through circular aliases", () => {
-    expect(extractMediaSrcMutations(`let a = b; let b = a; a.src = "new.mp4";`)).toEqual([]);
+    expect(extractMediaSrcMutations(`let a = b; let b = a; a.src = "new.mp4";`)).toEqual([
+      { selector: null, operation: "src_assignment", raw: `a.src = "new.mp4"` },
+    ]);
   });
 });
