@@ -487,6 +487,9 @@ export function hasRuntimeMediaChanges(html: string): boolean {
   let measured: ManagedMedia[] | undefined;
   for (const script of scriptBodies) {
     for (const mutation of extractMediaSrcMutations(script)) {
+      // A write whose target can't be resolved statically, such as one in a loop
+      // over querySelectorAll, may land on any media in the document.
+      if (!mutation.selector) return true;
       const id = /^#[A-Za-z_][\w-]*$/.test(mutation.selector) ? mutation.selector.slice(1) : null;
       if (id) {
         if (managedIds.has(id)) return true;
