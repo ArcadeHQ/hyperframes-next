@@ -5,11 +5,12 @@ import {
   isHeldUntilDue,
   recordOpenedAtInPoint,
   unproxiedSrc,
+  heldForCopy,
 } from "./proxySrc";
 import { createRuntimeStartTimeResolver } from "./startResolver";
 import { readMediaRenderId } from "./renderFrameSibling";
 import { defersMedia } from "./timedClipHide";
-import { inPlayerFrame } from "../studioPreviewMark";
+import { capturePageIn, inPlayerFrame } from "../studioPreviewMark";
 import { swallow } from "./diagnostics";
 import { isWebKit, mediaElementTime } from "./mediaClock";
 
@@ -98,8 +99,10 @@ export function releaseMedia(media: HTMLMediaElement, whenBuffered = false): voi
   if (media.querySelector("source") || (!whenBuffered && wholeFileBuffered(media))) return;
   if (holdsWhenIdle(media)) return holdUntilDue(media);
   const src = media.getAttribute("src");
-  stopMediaDownload(media);
-  if (src !== null) media.setAttribute("src", src);
+  if (src === null) return stopMediaDownload(media);
+  cancelPlaybackStart(media);
+  media.removeAttribute("src");
+  media.setAttribute("src", src);
 }
 
 export function lengthIsAuthored(media: Element): boolean {
@@ -171,7 +174,7 @@ function holdUntilDue(el: HTMLMediaElement): void {
 }
 
 export function giveBackWhenDue(el: HTMLMediaElement): void {
-  if (!isHeldUntilDue(el)) return;
+  if (!isHeldUntilDue(el) || heldForCopy.has(el)) return;
   const authored = authoredSrcOf(el)!;
   const start = readMediaStart(el);
   const written = start > 0 ? `${authored}#t=${start}` : authored;
@@ -215,7 +218,7 @@ export function deferMediaUntilDue(): void {
   if (!defersMedia()) return;
   const defer = (el: Element, startInFilm: (el: Element) => number, parsedEarly = false) => {
     const start = parseStrictFiniteTimingNumber(el.getAttribute("data-start"));
-    if (start == null || !lengthIsAuthored(el)) return;
+    if (start == null || (!lengthIsAuthored(el) && !capturePageIn(document))) return;
     const media = el as HTMLMediaElement;
     const authoredPreload = media.preload;
     const later = startInFilm(el) > 0;

@@ -11,8 +11,9 @@ import { failCommand } from "../../utils/commandResult.js";
  * can symlink the directory.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { writeRecord } from "../../utils/projectRecords.js";
 
 export interface StackOutputs {
   /** Project-name prefix passed to `deploy`. Used as CloudFormation stack-name suffix. */
@@ -51,8 +52,9 @@ export function stateFilePath(
 
 export function writeStackOutputs(outputs: StackOutputs, cwd: string = process.cwd()): string {
   const path = stateFilePath(outputs.stackName, cwd);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(outputs, null, 2) + "\n");
+  const name = `${STATE_FILE_PREFIX}${outputs.stackName}.json`;
+  if (!writeRecord(cwd, name, JSON.stringify(outputs, null, 2) + "\n"))
+    throw new Error(`Could not write ${path}: it, or .hyperframes, is a link or not a plain file`);
   return path;
 }
 
@@ -85,6 +87,9 @@ export function listStackNames(cwd: string = process.cwd()): string[] {
     .map((f) => f.slice(STATE_FILE_PREFIX.length, -".json".length));
 }
 
+const sameFileOnCaseInsensitiveDisk = (a: string, b: string): boolean =>
+  a.toLowerCase() === b.toLowerCase();
+
 /**
  * Read stack outputs or print a helpful error and exit. Shared between
  * `render`, `progress`, and `destroy` so the "did you run `deploy` first?"
@@ -92,14 +97,19 @@ export function listStackNames(cwd: string = process.cwd()): string[] {
  */
 export function requireStack(stackName: string, cwd: string = process.cwd()): StackOutputs {
   const stack = readStackOutputs(stackName, cwd);
+  const path = stateFilePath(stackName, cwd);
+  const deploy = `Run \`hyperframes lambda deploy${stackName === DEFAULT_STACK_NAME ? "" : ` --stack-name=${stackName}`}\``;
   if (!stack) {
     const known = listStackNames(cwd);
-    let hint = `Run \`hyperframes lambda deploy${stackName === DEFAULT_STACK_NAME ? "" : ` --stack-name=${stackName}`}\` first.`;
-    if (known.length) {
-      hint += ` Known stacks here: ${known.join(", ")}.`;
-    }
+    const hint = known.length ? ` Known stacks here: ${known.join(", ")}.` : "";
     console.error(
-      `[hyperframes lambda] no stack state for "${stackName}" at ${stateFilePath(stackName, cwd)}. ${hint}`,
+      `[hyperframes lambda] no stack state for "${stackName}" at ${path}. ${deploy} first.${hint}`,
+    );
+    failCommand();
+  }
+  if (!sameFileOnCaseInsensitiveDisk(String(stack.stackName), stackName)) {
+    console.error(
+      `[hyperframes lambda] ${path} names stack "${stack.stackName}", not "${stackName}". ${deploy} to rewrite it.`,
     );
     failCommand();
   }
