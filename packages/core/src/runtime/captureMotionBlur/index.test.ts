@@ -1973,25 +1973,26 @@ describe("filter fallback", () => {
     void paintCaptureMotionBlur(0.5, PLAY);
     expect(el.style.filter).toMatch(/url\("?#hf-mb-0"?\)/);
     expect(root.parentElement).toBe(document.body);
-    expect(document.querySelectorAll("feOffset")).toHaveLength(32);
-    expect(document.querySelectorAll("feComposite")).toHaveLength(31);
+    expect(document.querySelectorAll("feOffset")).toHaveLength(8);
+    expect(document.querySelectorAll("feComposite")).toHaveLength(7);
     expect(document.querySelectorAll("feGaussianBlur")).toHaveLength(1);
   });
 
-  it("draws fewer copies in preview below Full, and the full 32 in a render", () => {
+  it("draws 8 copies in preview at every quality, and the full 32 in a render", () => {
     const { el, h } = movingHost(CAPTURE);
     initCaptureMotionBlur(h);
-    expect(motionBlurLighterLevels()).toEqual([]);
     setMotionBlurPreviewQuality(0.5);
     void paintCaptureMotionBlur(0.5, PLAY);
-    expect(document.querySelectorAll("feOffset")).toHaveLength(16);
-    expect(motionBlurLighterLevels()).toEqual([0.5, 0.25]);
+    expect(document.querySelectorAll("feOffset")).toHaveLength(8);
+    expect(motionBlurLighterLevels()).toEqual([]);
     setMotionBlurPreviewQuality(0.125);
     void paintCaptureMotionBlur(0.6, PLAY);
     expect(document.querySelectorAll("feOffset")).toHaveLength(8);
     expect(el.style.filter).toMatch(/url\("?#hf-mb-0"?\)/);
     void paintCaptureMotionBlur(0.5, { engineMode: true });
-    expect(document.querySelectorAll("feOffset")).toHaveLength(32);
+    expect(document.querySelectorAll("filter")).toHaveLength(1);
+    expect(document.querySelectorAll("#hf-mb-0 feOffset")).toHaveLength(32);
+    expect(document.querySelectorAll("#hf-mb-0 feComposite")).toHaveLength(31);
   });
 
   it("stays off when the renderer turned blur off", () => {
