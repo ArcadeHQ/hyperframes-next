@@ -17,13 +17,16 @@ import type { CaptureMotionBlurHost, Config, Report, Tier } from "./tier";
 const NS = "http://www.w3.org/2000/svg";
 /** Copies per mover; the softening along the motion closes the steps between them. */
 const COPIES = 32;
-export const FILTER_LIGHTER_LEVELS = [0.5, 0.25] as const;
-const previewCopiesAt = (level: number): number => (level >= 1 ? COPIES : level >= 0.5 ? 16 : 8);
-let previewCopies = COPIES;
+/**
+ * Live playback draws 8 copies at every preview quality: each copy is a full-size pass over the
+ * mover, so with many movers 32 drop frames, even at Full. No lower level is lighter, so none is
+ * advertised.
+ */
+const PREVIEW_COPIES = 8;
+export const FILTER_LIGHTER_LEVELS: readonly number[] = [];
 
-export function setFilterPreviewQuality(level: number): void {
-  if (level > 0) previewCopies = previewCopiesAt(level);
-}
+/** Preview quality leaves the copy count alone: playback always draws PREVIEW_COPIES. */
+export function setFilterPreviewQuality(_level: number): void {}
 const PREVIEW_READS = 4;
 const RENDER_READS = 8;
 const FILTER_ID = "hf-mb";
@@ -225,7 +228,7 @@ export function createFilterTier(
         t,
         reads: engineMode ? RENDER_READS : PREVIEW_READS,
         ...shutterTimes(config.shutterDeg, config.phaseDeg, host.fps),
-        taps: engineMode ? COPIES : previewCopies,
+        taps: engineMode ? COPIES : PREVIEW_COPIES,
         frameW: width,
         scene: root,
         frameH: height,
