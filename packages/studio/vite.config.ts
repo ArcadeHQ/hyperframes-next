@@ -209,6 +209,7 @@ function devProjectApi(): Plugin {
           // writes the API accepts (Codespaces, tunnels).
           _api = mod.createStudioApi(adapter, {
             allowedHosts: mod.previewAllowedHostsFromEnv(),
+            sandboxThumbnailCaptures: true,
           });
         }
         return _api;
@@ -238,7 +239,7 @@ function devProjectApi(): Plugin {
 
       server.middlewares.use((req, res, next) => {
         if (req.url !== "/__hyperframes_config") return next();
-        const payload = previewConfigPayload(process.env, process.pid, studioPkg.version);
+        const payload = previewConfigPayload(process.env, process.pid, studioPkg.version, req);
         if (!payload) return next();
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify(payload));
@@ -410,5 +411,8 @@ export default defineConfig({
   test: {
     exclude: ["data/**", "node_modules/**"],
     setupFiles: ["src/test-setup.ts"],
+    environmentOptions: {
+      happyDOM: { settings: { enableIframePageLoading: true } },
+    },
   },
 });
