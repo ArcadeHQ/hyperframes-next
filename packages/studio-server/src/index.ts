@@ -59,6 +59,7 @@ export {
   type FileWriteReceipt,
 } from "./helpers/fileVersion.js";
 export { buildSubCompositionHtml } from "./helpers/subComposition.js";
+export { captureLoadGrant, grantCaptureLoads } from "./helpers/captureLoads.js";
 export {
   clearElementScreenshotIsolation,
   getElementScreenshotClip,
@@ -83,3 +84,12 @@ export {
   createStudioMotionRenderBodyScript,
   type StudioMotionRenderScriptOptions,
 } from "./helpers/studioMotionRenderScript.js";
+export type {
+  LocalShareAudience,
+  LocalShareSpace,
+  LocalShareState,
+  LocalShareJob,
+  LocalShareSnapshot,
+  LocalShareAction,
+  LocalShareInteraction,
+} from "./localShare.js";

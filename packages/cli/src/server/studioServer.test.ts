@@ -8,9 +8,11 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +49,27 @@ vi.mock("@hyperframes/producer", () => ({
   createRenderJob: (opts: Record<string, unknown>) => ({ ...opts, perfSummary: undefined }),
   executeRenderJob: (...args: Parameters<typeof producerState.executeRenderJob>) =>
     producerState.executeRenderJob(...args),
+}));
+// Stand-ins for the HEIF and GIF steps: each writes a converted file where a real conversion would.
+const imagePrep = vi.hoisted(() => ({
+  convert: async (html: string, options: { outputDir: string }) => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(options.outputDir, { recursive: true });
+    writeFileSync(`${options.outputDir}/converted`, "image");
+    return { html, preparedAssets: new Map<string, string>() };
+  },
+}));
+vi.mock("../../../producer/src/services/heifImagePrep.js", () => ({
+  prepareHeifImageInputs: async (html: string, options: { outputDir: string }) => ({
+    ...(await imagePrep.convert(html, options)),
+    preparedImages: [],
+  }),
+}));
+vi.mock("../../../producer/src/services/animatedGifPrep.js", () => ({
+  prepareAnimatedGifInputs: async (html: string, options: { outputDir: string }) => ({
+    ...(await imagePrep.convert(html, options)),
+    preparedGifs: [],
+  }),
 }));
 const engineState = vi.hoisted(() => ({
   acquireBrowser: async (..._args: unknown[]): Promise<unknown> => {
@@ -724,6 +747,42 @@ describe("Studio thumbnail capture", () => {
     expect(screenshot).toHaveBeenCalledTimes(1);
   });
 
+  // fails without the fix: the thumbnail browser launched with no page server, so with
+  // PRODUCER_RESTRICT_PAGE_NETWORK on its proxy refused the Studio's own preview and every thumbnail failed.
+  it("gives the thumbnail browser the preview's server, and a new browser for a preview on another host", async () => {
+    fakePageBrowser();
+    const launch = vi.spyOn(engineState, "acquireBrowser");
+    const dir = tmpProject();
+    server = createStudioServer({ projectDir: dir });
+    const at = (previewUrl: string) => ({ ...opts(dir), previewUrl });
+    await server.adapter.generateThumbnail?.(at("http://127.0.0.1:4100/api/projects/demo/preview"));
+    await server.adapter.generateThumbnail?.(at("http://127.0.0.1:4100/api/projects/demo/preview"));
+    await server.adapter.generateThumbnail?.(at("http://localhost:4200/api/projects/demo/preview"));
+    expect(
+      launch.mock.calls.map((call) => (call[1] as { pageServerUrl?: string }).pageServerUrl),
+    ).toEqual([
+      "http://127.0.0.1:4100/api/projects/demo/preview",
+      "http://localhost:4200/api/projects/demo/preview",
+    ]);
+  });
+
+  // fails without the fix: the direct host came from each preview URL, which a request's loopback Host header
+  // can name, so a request could open another local port to the thumbnail page and two spellings of one server
+  // closed each other's browser.
+  it("gives the thumbnail browser the server's own origin, whatever host a request named", async () => {
+    fakePageBrowser();
+    const launch = vi.spyOn(engineState, "acquireBrowser");
+    const dir = tmpProject();
+    server = createStudioServer({ projectDir: dir, origin: () => "http://127.0.0.1:4100" });
+    const at = (previewUrl: string) => ({ ...opts(dir), previewUrl });
+    await server.adapter.generateThumbnail?.(at("http://127.0.0.1:4100/api/projects/demo/preview"));
+    await server.adapter.generateThumbnail?.(at("http://localhost:4100/api/projects/demo/preview"));
+    await server.adapter.generateThumbnail?.(at("http://localhost:9999/api/projects/demo/preview"));
+    expect(
+      launch.mock.calls.map((call) => (call[1] as { pageServerUrl?: string }).pageServerUrl),
+    ).toEqual(["http://127.0.0.1:4100"]);
+  });
+
   it("undoes a row's isolation after its screenshot, since the page is reused", async () => {
     const { screenshot, evaluate } = fakePageBrowser();
     const dir = tmpProject();
@@ -736,6 +795,53 @@ describe("Studio thumbnail capture", () => {
     );
     expect(clears).toHaveLength(1);
     expect(clears[0]).toBeGreaterThan(screenshot.mock.invocationCallOrder[0]!);
+  });
+
+  it("serves thumbnail capture documents in an opaque origin", async () => {
+    const dir = tmpProject();
+    writeFileSync(join(dir, "index.html"), '<div data-composition-id="main"></div>');
+    server = createStudioServer({ projectDir: dir, projectName: "demo" });
+    const capture = await server.app.request(
+      "http://localhost/api/projects/demo/preview?hf-capture=1",
+    );
+    expect(capture.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+    const preview = await server.app.request("http://localhost/api/projects/demo/preview");
+    expect(preview.headers.get("content-security-policy")).toBeNull();
+  });
+
+  it("grants the capture page's loads on its own session before it navigates", async () => {
+    const calls: string[] = [];
+    const session = {
+      send: vi.fn(async (method: string) => void calls.push(method)),
+      on: vi.fn(),
+    };
+    const page = new Proxy(
+      {
+        createCDPSession: async () => session,
+        goto: async () => void calls.push("goto"),
+        screenshot: async () => Buffer.from("jpeg"),
+      },
+      {
+        get: (target, key) =>
+          key === "then"
+            ? undefined
+            : key in target
+              ? target[key as keyof typeof target]
+              : async () => {},
+      },
+    );
+    engineState.acquireBrowser = async () => ({
+      browser: { connected: true, newPage: async () => page, on: () => {} },
+      release: async () => {},
+    });
+    const dir = tmpProject();
+    server = createStudioServer({ projectDir: dir });
+    const previewUrl = "http://127.0.0.1:3002/api/projects/demo/preview?hf-capture=1";
+    await expect(
+      server.adapter.generateThumbnail?.({ ...opts(dir), previewUrl }),
+    ).resolves.toBeInstanceOf(Buffer);
+    expect(calls.slice(0, 2)).toEqual(["Fetch.enable", "goto"]);
+    expect(session.on).toHaveBeenCalledWith("Fetch.requestPaused", expect.any(Function));
   });
 
   it("reuses the cached project signature instead of walking the project per thumbnail", async () => {
@@ -1200,4 +1306,44 @@ describe("createStudioServer Host check on every route", () => {
       delete process.env.HYPERFRAMES_PREVIEW_ALLOWED_HOSTS;
     }
   });
+});
+
+describe("createStudioServer preview image preparation", () => {
+  const html = '<div data-composition-id="main"><img src="photo.png"></div>';
+  const prepared = (projectDir: string) =>
+    ["heif", "gif"].filter((kind) =>
+      existsSync(join(projectDir, ".hyperframes", "prepared-assets", kind, "converted")),
+    );
+
+  it("prepares HEIF and GIF images inside a project's own .hyperframes folder", async () => {
+    const projectDir = tmpProject();
+    server = createStudioServer({ projectDir });
+
+    await server.adapter.transformPreviewHtml?.({
+      html,
+      project: { id: "p", dir: projectDir },
+      activeCompositionPath: "index.html",
+    });
+
+    expect(prepared(projectDir)).toEqual(["heif", "gif"]);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "serves images unprepared when .hyperframes is a link, and writes nothing where it points",
+    async () => {
+      const projectDir = tmpProject();
+      const outside = tmpProject();
+      symlinkSync(outside, join(projectDir, ".hyperframes"));
+      server = createStudioServer({ projectDir });
+
+      const served = await server.adapter.transformPreviewHtml?.({
+        html,
+        project: { id: "p", dir: projectDir },
+        activeCompositionPath: "index.html",
+      });
+
+      expect(served).toContain('src="photo.png"');
+      expect(readdirSync(outside)).toEqual([]);
+    },
+  );
 });
