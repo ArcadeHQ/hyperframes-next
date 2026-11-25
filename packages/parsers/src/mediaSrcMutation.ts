@@ -2,7 +2,8 @@ import * as acorn from "acorn";
 import * as acornWalk from "acorn-walk";
 
 export interface MediaSrcMutation {
-  selector: string;
+  /** Null when the write's target is not a statically resolvable DOM lookup. */
+  selector: string | null;
   operation: "src_assignment" | "set_attribute";
   raw: string;
 }
@@ -206,7 +207,7 @@ function selectorFromDomLookup(
   return method === "getElementById" ? `#${value}` : value;
 }
 
-/** Find literal source writes whose target is a statically resolvable DOM lookup. */
+/** Find source writes, with the target's selector when it is a statically resolvable DOM lookup. */
 export function extractMediaSrcMutations(script: string): MediaSrcMutation[] {
   try {
     const ast = parseProgram(script);
@@ -220,10 +221,8 @@ export function extractMediaSrcMutations(script: string): MediaSrcMutation[] {
           memberName(node.left) !== "src"
         )
           return;
-        const selector = lookupSelector(node.left.object, scopeAt(ancestors));
-        if (!selector) return;
         mutations.push({
-          selector,
+          selector: lookupSelector(node.left.object, scopeAt(ancestors)) ?? null,
           operation: "src_assignment",
           raw: script.slice(node.start, node.end),
         });
@@ -232,10 +231,8 @@ export function extractMediaSrcMutations(script: string): MediaSrcMutation[] {
         if (node.callee.type !== "MemberExpression" || memberName(node.callee) !== "setAttribute")
           return;
         if (literalString(node.arguments[0])?.toLowerCase() !== "src") return;
-        const selector = lookupSelector(node.callee.object, scopeAt(ancestors));
-        if (!selector) return;
         mutations.push({
-          selector,
+          selector: lookupSelector(node.callee.object, scopeAt(ancestors)) ?? null,
           operation: "set_attribute",
           raw: script.slice(node.start, node.end),
         });
